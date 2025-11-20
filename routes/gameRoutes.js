@@ -5,209 +5,203 @@ const Game = require('../models/Game');
 const { translateWord } = require('../utils/translator');
 const { checkWordExists } = require('../utils/dictionary');
 
-// 🎲 랜덤 시작 단어 목록
+// 🎲 시작 단어
 const STARTING_WORDS = [
-    { ko: '나무', ja: 'き' }, { ko: '바다', ja: 'うみ' },
-    { ko: '하늘', ja: 'そら' }, { ko: '사랑', ja: 'あい' },
-    { ko: '학교', ja: 'がっこう' }, { ko: '친구', ja: 'ともだち' }
+    { ko: '나무', ja: '木(き)' }, 
+    { ko: '바다', ja: '海(うみ)' },
+    { ko: '하늘', ja: '空(そら)' }, 
+    { ko: '학교', ja: '学校(がっこう)' },
+    { ko: '학생', ja: '学生(がくせい)' },
+    { ko: '친구', ja: '友達(ともだち)' }
 ];
 
-/**
- * 1. 게임 시작 API
- * [POST] /api/games/start
- * - 방장이 호출하며, 선공과 시작 단어를 랜덤으로 정해 DB에 저장합니다.
- */
+// 헬퍼 함수
+function getCleanReading(text) {
+    if (!text) return "";
+    const match = text.match(/\(([^)]+)\)/);
+    return match ? match[1] : text;
+}
+
+function normalizeKana(char) {
+    const smallMap = {
+        'ぁ': 'あ', 'ぃ': 'い', 'ぅ': 'う', 'ぇ': 'え', 'ぉ': 'お',
+        'っ': 'つ',
+        'ゃ': 'や', 'ゅ': 'ゆ', 'ょ': 'よ',
+        'ゎ': 'わ'
+    };
+    return smallMap[char] || char;
+}
+
+// 1. 게임 시작 API
 router.post('/start', async (req, res) => {
     const { roomId, koreanPlayerId, japanesePlayerId } = req.body;
-
-    // 랜덤 결정: 선공(0 or 1) & 시작 단어
     const firstTurn = Math.random() < 0.5 ? 'korean' : 'japanese';
     const startWord = STARTING_WORDS[Math.floor(Math.random() * STARTING_WORDS.length)];
     const gameId = uuidv4();
 
     try {
         const newGame = await Game.create({
-            gameId,
-            roomId,
-            players: { 
-                korean: koreanPlayerId, 
-                japanese: japanesePlayerId 
-            },
+            gameId, roomId,
+            players: { korean: koreanPlayerId, japanese: japanesePlayerId },
             currentTurn: firstTurn,
             currentWord: startWord,
             lastTurnStart: Date.now(),
             timers: { korean: 90, japanese: 90 },
             history: []
         });
-
-        console.log(`🎮 게임 시작 (ID: ${gameId}) - 선공: ${firstTurn}`);
+        console.log(`🎮 게임 시작 (ID: ${gameId})`);
         res.json({ message: '게임 시작', gameId, gameData: newGame });
-
-    } catch (error) {
-        console.error('게임 생성 실패:', error);
-        res.status(500).json({ error: '게임 생성 실패' });
-    }
+    } catch (error) { res.status(500).json({ error: '생성 실패' }); }
 });
 
-/**
- * 2. 단어 제출 API (핵심 로직)
- * [POST] /api/games/:gameId/submit
- * - 끝말잇기 규칙, 사전 검사, 중복 단어 검사, 시간 계산 등을 수행합니다.
- */
+// 2. 단어 제출 API
 router.post('/:gameId/submit', async (req, res) => {
     const { gameId } = req.params;
     const { userId, playerType, word } = req.body;
 
     try {
-        // DB에서 게임 정보 조회
         const game = await Game.findOne({ gameId: gameId });
+        if (!game || game.status !== 'playing') return res.status(400).json({ error: '종료된 게임' });
+        if (game.currentTurn !== playerType) return res.status(400).json({ error: '순서 아님' });
 
-        // --- [1] 기본 유효성 검사 ---
-        if (!game || game.status !== 'playing') {
-            return res.status(400).json({ error: '종료된 게임입니다.' });
-        }
-        if (game.currentTurn !== playerType) {
-            return res.status(400).json({ error: '당신의 차례가 아닙니다!' });
-        }
-
-        // --- [2] 시간 계산 및 타임오버 체크 ---
+        // 1. 시간 계산 (현재까지 흐른 시간 차감)
         const now = Date.now();
-        const elapsed = (now - game.lastTurnStart) / 1000; // 경과 시간(초)
+        const elapsed = (now - game.lastTurnStart) / 1000;
         game.timers[playerType] -= elapsed;
 
+        // 시간 초과 체크
         if (game.timers[playerType] <= 0) {
             return await endGame(game, playerType === 'korean' ? 'japanese' : 'korean', '시간 초과', res);
         }
 
-        // --- [3] 이미 사용한 단어인지 검사 (새로 추가됨 ✨) ---
-        // history 배열을 뒤져서 같은 단어가 있는지 확인 (한국어 기준 비교)
-        const isUsed = game.history.some(record => record.word === word);
-        if (isUsed) {
-            await applyPenalty(game, playerType, 5); // 5초 패널티
-            return res.status(400).json({ error: `이미 사용된 단어입니다! (-5초)`, gameData: game });
+        // 2. 중복 검사
+        if (game.history.some(h => h.word.split('(')[0] === word)) {
+            await applyPenalty(game, playerType, 5);
+            return res.status(400).json({ error: '이미 쓴 단어! (-5초)', gameData: game });
         }
 
-        // --- [4] 끝말잇기 규칙 검사 (글자 이어지는지) ---
-        // 한국인: 이전 단어의 한국어 뜻 끝글자 <-> 입력 단어 첫글자
-        // 일본인: 이전 단어의 일본어 뜻 끝글자 <-> 입력 단어 첫글자
-        let targetWord = playerType === 'korean' ? game.currentWord.ko : game.currentWord.ja;
-        const lastChar = targetWord.trim().slice(-1);
-        const firstChar = word.trim().charAt(0);
+        // 3. 사전 검사
+        const dictResult = await checkWordExists(word, playerType);
+        if (!dictResult.isValid) {
+            await applyPenalty(game, playerType, 5);
+            return res.status(400).json({ error: '사전에 없는 단어! (-5초)', gameData: game });
+        }
+
+        const currentReading = dictResult.reading; 
+
+        // 4. 끝말잇기 규칙 검사
+        let previousWordRaw = playerType === 'korean' ? game.currentWord.ko : game.currentWord.ja;
+        let previousSound = getCleanReading(previousWordRaw);
+        let lastChar = normalizeKana(previousSound.trim().slice(-1)); 
+        let firstChar = normalizeKana(currentReading.trim().charAt(0));
+
+        // 장음(ー) 처리: 만약 끝글자가 장음이면 그 앞글자를 기준으로 함 (선택사항, 여기선 일단 장음 무시)
+        if (lastChar === 'ー') {
+             lastChar = normalizeKana(previousSound.trim().slice(-2, -1));
+        }
 
         if (lastChar !== firstChar) {
             await applyPenalty(game, playerType, 5);
-            return res.status(400).json({ error: `땡! '${lastChar}'(으)로 시작해야 합니다! (-5초)`, gameData: game });
+            return res.status(400).json({ 
+                error: `땡! 소리가 '${lastChar}'(으)로 시작해야 합니다! (-5초)`, 
+                gameData: game 
+            });
         }
 
-        // --- [5] 사전 유효성 검사 (외부 API) ---
-        const isRealWord = await checkWordExists(word, playerType);
-        if (!isRealWord) {
-            await applyPenalty(game, playerType, 5);
-            return res.status(400).json({ error: `사전에 없는 단어입니다! (-5초)`, gameData: game });
+        // 5. 'ん' 패배 검사
+        if (currentReading.trim().endsWith('ん')) {
+            return await endGame(game, playerType === 'korean' ? 'japanese' : 'korean', `'ん'으로 끝남`, res);
         }
 
-        // --- [6] 번역 수행 ---
+        // 6. 번역 및 포맷팅
         const sourceLang = playerType === 'korean' ? 'ko' : 'ja';
         const targetLang = playerType === 'korean' ? 'ja' : 'ko';
-        const translatedText = await translateWord(word, sourceLang, targetLang);
+        let translatedText = await translateWord(word, sourceLang, targetLang);
 
-        // --- [7] 'ん'(응/ㄴ) 패배 규칙 검사 ---
-        // 일본인이 입력했거나, 한국어가 번역된 일본어 단어의 끝이 'ん'이면 패배
-        const checkJpWord = playerType === 'japanese' ? word : translatedText;
-        if (checkJpWord.trim().endsWith('ん')) {
-            return await endGame(game, playerType === 'korean' ? 'japanese' : 'korean', `'ん'으로 끝났습니다!`, res);
-        }
-
-        // --- [8] 성공 처리: 데이터 업데이트 및 저장 ---
-        game.currentWord = {
-            ko: playerType === 'korean' ? word : translatedText,
-            ja: playerType === 'japanese' ? word : translatedText
-        };
-        game.currentTurn = playerType === 'korean' ? 'japanese' : 'korean'; // 턴 넘김
-        game.lastTurnStart = Date.now(); // 시간 기준점 초기화
-
-        // 기록 추가
-        game.history.push({
-            word: word,
-            translated: translatedText,
-            player: playerType,
-            createdAt: new Date()
-        });
-
-        await game.save(); // DB 저장
-
-        res.json({ message: '성공', translatedWord: translatedText, gameData: game });
-
-    } catch (error) {
-        console.error('제출 처리 중 오류:', error);
-        res.status(500).json({ error: '서버 오류가 발생했습니다.' });
-    }
-});
-
-/**
- * 3. 게임 상태 조회 API (폴링용)
- * [GET] /api/games/:gameId/status
- * - 0초가 되면 자동으로 게임을 종료시키는 로직 포함
- */
-router.get('/:gameId/status', async (req, res) => {
-    const { gameId } = req.params;
-
-    try {
-        const game = await Game.findOne({ gameId: gameId });
-        if (!game) return res.status(404).json({ error: '게임 없음' });
-
-        // 게임 중일 때만 시간 자동 감소 체크
-        if (game.status === 'playing') {
-            const now = Date.now();
-            const elapsed = (now - game.lastTurnStart) / 1000;
-            const currentTurnPlayer = game.currentTurn;
-            const timeLeft = game.timers[currentTurnPlayer] - elapsed;
-
-            // 시간이 다 되었으면 강제 종료
-            if (timeLeft <= 0) {
-                console.log(`⏰ 시간 초과 감지 (ID: ${gameId})`);
-                game.timers[currentTurnPlayer] = 0;
-                game.status = 'finished';
-                game.winner = currentTurnPlayer === 'korean' ? 'japanese' : 'korean';
-                await game.save();
+        if (targetLang === 'ja') {
+            const transCheck = await checkWordExists(translatedText, 'ja');
+            if (transCheck.isValid && transCheck.reading !== translatedText) {
+                translatedText = `${translatedText}(${transCheck.reading})`;
             }
         }
 
-        // 클라이언트에게 보낼 때는 계산된 시간을 적용해서 전송 (DB 저장 X)
-        let displayGame = game.toObject();
-        if (displayGame.status === 'playing') {
-            const now = Date.now();
-            const elapsed = (now - displayGame.lastTurnStart) / 1000;
-            displayGame.timers[displayGame.currentTurn] -= elapsed;
+        let displayWord = word;
+        if (playerType === 'japanese' && word !== currentReading) {
+            displayWord = `${word}(${currentReading})`;
         }
 
-        res.json(displayGame);
+        // 7. 성공 저장
+        game.currentWord = {
+            ko: playerType === 'korean' ? displayWord : translatedText,
+            ja: playerType === 'japanese' ? displayWord : translatedText
+        };
+        game.currentTurn = playerType === 'korean' ? 'japanese' : 'korean';
+        game.lastTurnStart = Date.now(); // ⭐ 성공했으니 기준 시간 초기화
+        
+        game.history.push({ word: displayWord, translated: translatedText, player: playerType });
+        await game.save();
 
-    } catch (error) {
-        console.error('상태 조회 오류:', error);
-        res.status(500).json({ error: '상태 조회 실패' });
+        res.json({ message: '성공', gameData: game });
+
+    } catch (e) {
+        console.error(e);
+        res.status(500).json({ error: '서버 오류' });
     }
 });
 
-// --- [헬퍼 함수들] ---
+// 상태 조회
+router.get('/:gameId/status', async (req, res) => {
+    const { gameId } = req.params;
+    try {
+        const game = await Game.findOne({ gameId: gameId });
+        if (!game) return res.status(404).json({ error: '게임 없음' });
+        
+        if (game.status === 'playing') {
+            const now = Date.now();
+            const elapsed = (now - game.lastTurnStart) / 1000;
+            const timeLeft = game.timers[game.currentTurn] - elapsed;
+            if (timeLeft <= 0) {
+                game.timers[game.currentTurn] = 0;
+                game.status = 'finished';
+                game.winner = game.currentTurn === 'korean' ? 'japanese' : 'korean';
+                await game.save();
+            }
+        }
+        
+        let displayGame = game.toObject();
+        if (displayGame.status === 'playing') {
+            displayGame.timers[displayGame.currentTurn] -= (Date.now() - displayGame.lastTurnStart) / 1000;
+        }
+        res.json(displayGame);
+    } catch (error) { res.status(500).json({ error: '실패' }); }
+});
 
-// 게임 종료 처리 함수
 async function endGame(game, winner, reason, res) {
     game.status = 'finished';
     game.winner = winner;
-    if (game.timers[game.currentTurn] < 0) game.timers[game.currentTurn] = 0;
     await game.save();
-    return res.json({ message: `${reason} 패배했습니다.`, gameData: game });
+    return res.json({ message: `${reason} 패배!`, gameData: game });
 }
 
-// 패널티 적용 함수
-async function applyPenalty(game, playerType, seconds) {
-    game.timers[playerType] -= seconds;
-    if (game.timers[playerType] < 0) {
-        // 패널티로 인해 죽는 경우는 submit 함수 내에서 별도 처리하거나 여기서 처리 가능
-        // 현재 구조상 여기서는 시간만 깎고 저장은 호출자가 수행
-    }
+// ⭐ [수정된 부분] 패널티 적용 시 기준 시간(lastTurnStart)도 리셋해야 함!
+async function applyPenalty(game, player, seconds) {
+    game.timers[player] -= seconds;
+    // 중요: 지금까지 흐른 시간은 이미 timers에서 뺐으므로,
+    // 기준 시간을 '지금(Now)'으로 당겨줘야 다음 계산 때 중복으로 빼지 않음.
+    game.lastTurnStart = Date.now(); 
+    
+    if (game.timers[player] < 0) game.timers[player] = 0;
     await game.save();
 }
 
 module.exports = router;
+
+javascript
+async function applyPenalty(game, player, seconds) {
+    game.timers[player] -= seconds;
+    
+    // 👇 이 줄이 추가되었습니다!
+    game.lastTurnStart = Date.now(); 
+    
+    await game.save();
+}
