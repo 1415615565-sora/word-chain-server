@@ -56,4 +56,31 @@ router.post('/join', (req, res) => {
     res.json({ message: '입장 성공', gameId: roomId });
 });
 
+
+ //특정 방 정보 조회 (폴링용)
+router.get('/:roomId', (req, res) => {
+    const { roomId } = req.params;
+    const room = rooms.find(r => r.roomId === roomId);
+
+    if (!room) {
+        return res.status(404).json({ error: '방을 찾을 수 없습니다.' });
+    }
+    res.json(room);
+});
+
+ //방에 게임 ID 연결하기 (게임 시작 시 호출)
+router.post('/:roomId/link', (req, res) => {
+    const { roomId } = req.params;
+    const { gameId } = req.body;
+
+    const room = rooms.find(r => r.roomId === roomId);
+    if (!room) return res.status(404).json({ error: '방 없음' });
+
+    // 방에 게임 ID를 기록해둡니다. (게스트가 이걸 보고 따라옵니다)
+    room.gameId = gameId; 
+    room.status = 'playing';
+    
+    res.json({ success: true });
+});
+
 module.exports = router;
