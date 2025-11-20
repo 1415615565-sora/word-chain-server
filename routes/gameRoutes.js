@@ -199,8 +199,6 @@ module.exports = router;
 javascript
 async function applyPenalty(game, player, seconds) {
     game.timers[player] -= seconds;
-    
-    // 👇 이 줄이 추가되었습니다!
     game.lastTurnStart = Date.now(); 
     
     await game.save();
