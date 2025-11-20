@@ -17,6 +17,14 @@ app.get('/', (req, res) => {
   res.send('끝말 이어가기 게임 서버가 작동 중입니다!');
 });
 
+// [추가] 사용자(로그인) 관련 라우트 연결
+const userRoutes = require('./routes/userRoutes');
+app.use('/api/users', userRoutes);
+
+// [추가] 방 관련 라우트 연결
+const roomRoutes = require('./routes/roomRoutes');
+app.use('/api/rooms', roomRoutes);
+
 // 4. API 라우터 연결 (다음 단계에서 구현할 게임 로직)
 const gameRoutes = require('./routes/gameRoutes'); // 추가
 app.use('/api/games', gameRoutes); // '/api/games' 경로로 라우터 연결
