@@ -1,38 +1,48 @@
 const axios = require('axios');
+const DEEPL_API_KEY = process.env.DEEPL_API_KEY;
 
 async function translateWord(text, sourceLang, targetLang) {
-    // 언어 설정 (ko|ja)
-    const langPair = `${sourceLang}|${targetLang}`;
-    const apiUrl = 'https://api.mymemory.translated.net/get';
+    // DeepL Free API 전용 주소
+    const apiUrl = 'https://api-free.deepl.com/v2/translate';
+
+    // DeepL은 언어 코드를 대문자로 받습니다 (ko -> KO, ja -> JA)
+    const targetCode = targetLang.toUpperCase();
+    const sourceCode = sourceLang.toUpperCase();
 
     try {
-        const response = await axios.get(apiUrl, {
-            params: { 
-                q: text, 
-                langpair: langPair,
-                // 중요: 이메일을 적어야 하루 500단어 제한이 50,000단어로 늘어납니다.
-                // 본인의 실제 이메일을 적는 것이 가장 좋습니다.
-                de: 'dev@example.com' 
-            },
+        const response = await axios.post(apiUrl, {
+            text: [text], // 배열 형태로 보냅니다
+            target_lang: targetCode,
+            source_lang: sourceCode
+        }, {
             headers: {
-                // 브라우저인 척 속여서 403 차단을 방지합니다.
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36'
+                'Authorization': `DeepL-Auth-Key ${DEEPL_API_KEY}`,
+                'Content-Type': 'application/json'
             },
-            timeout: 3000 // 3초 안에 응답 없으면 무시 (게임 멈춤 방지)
+            timeout: 5000 // 5초 타임아웃
         });
 
-        // API 상태 코드가 200이어도, 실제 번역 성공 여부는 responseStatus로 확인해야 함
-        if (response.data.responseStatus !== 200) {
-            console.error(`번역 API 내부 오류: ${response.data.responseDetails}`);
-            return text; // 번역 실패 시 원본 반환
+        // 응답 데이터 추출
+        if (response.data && response.data.translations && response.data.translations.length > 0) {
+            return response.data.translations[0].text;
         }
-
-        return response.data.responseData.translatedText || text;
+        
+        return text; // 데이터 없음
 
     } catch (error) {
-        console.error('번역 요청 실패:', error.message);
-        return text; // 에러 발생 시 원본 반환
+        // 상세 에러 로그
+        if (error.response) {
+            // DeepL 서버가 에러를 보낸 경우 (403, 456 등)
+            console.error('DeepL API 오류:', error.response.status, error.response.data);
+        } else {
+            // 네트워크 오류 등
+            console.error('DeepL 접속 실패:', error.message);
+        }
+        return text; // 실패 시 원본 반환 (게임 끊김 방지)
     }
 }
+
+module.exports = { translateWord };
+
 
 module.exports = { translateWord };
