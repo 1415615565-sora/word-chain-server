@@ -128,7 +128,7 @@ router.get('/:roomId', async (req, res) => {
         }
 
         const HOST_TIMEOUT = 180000;  // 3분 (방장)
-        const GUEST_TIMEOUT = 30000;  // 30초 (게스트)
+        const GUEST_TIMEOUT = 60000;  // 60초 (게스트)
 
         // (A) 방장 잠수 체크
         if (now - new Date(room.lastActive.host).getTime() > HOST_TIMEOUT) {
