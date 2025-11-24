@@ -4,13 +4,11 @@ const { v4: uuidv4 } = require('uuid');
 const Room = require('../models/Room');
 const Game = require('../models/Game');
 
-// 1. 방 만들기
+// 1. 방 만들기 (청소 포함)
 router.post('/create', async (req, res) => {
     const { userId, playerType, roomName, password } = req.body;
     
-    if (password && !/^\d{4}$/.test(password)) {
-        return res.status(400).json({ error: '비밀번호는 4자리 숫자여야 합니다.' });
-    }
+    if (password && !/^\d{4}$/.test(password)) return res.status(400).json({ error: '비밀번호는 4자리 숫자여야 합니다.' });
 
     try {
         await Room.deleteMany({ creatorId: userId });
@@ -29,15 +27,13 @@ router.post('/create', async (req, res) => {
     } catch (err) { res.status(500).json({ error: '오류' }); }
 });
 
-// 2. 방 목록 조회 (수정됨: 3분 이상 잠수 탄 방 청소)
+// 2. 방 목록 조회 (죽은 방 청소)
 router.get('/', async (req, res) => {
     const { playerType } = req.query;
-    
     try {
         const now = Date.now();
-        const CLEANUP_TIMEOUT = 180000; //3분 (방장이 3분간 연락 없으면 삭제)
+        const CLEANUP_TIMEOUT = 180000; // 3분
 
-        // 죽은 방 청소
         await Room.deleteMany({
             status: 'waiting',
             'lastActive.host': { $lt: new Date(now - CLEANUP_TIMEOUT) }
@@ -48,12 +44,8 @@ router.get('/', async (req, res) => {
         else if (playerType === 'japanese') query.creatorType = 'korean';
 
         const rooms = await Room.find(query).sort({ createdAt: -1 });
-        
         res.json(rooms.map(r => ({
-            roomId: r.roomId,
-            roomName: r.roomName,
-            creatorType: r.creatorType,
-            hasPassword: !!r.password
+            roomId: r.roomId, roomName: r.roomName, creatorType: r.creatorType, hasPassword: !!r.password
         })));
     } catch (err) { res.status(500).json({ error: '실패' }); }
 });
@@ -69,7 +61,7 @@ router.post('/join', async (req, res) => {
 
         room.guestId = userId;
         room.status = 'playing';
-        room.lastActive.guest = Date.now(); 
+        room.lastActive.guest = Date.now();
         await room.save();
         res.json({ message: '성공', gameId: roomId });
     } catch (err) { res.status(500).json({ error: '실패' }); }
@@ -85,9 +77,7 @@ router.post('/leave', async (req, res) => {
         if (room.gameId) {
             const game = await Game.findOne({ gameId: room.gameId });
             if (game && game.status === 'playing') {
-                const winnerRole = (userId === room.creatorId) 
-                    ? (room.creatorType === 'korean' ? 'japanese' : 'korean')
-                    : room.creatorType;
+                const winnerRole = (userId === room.creatorId) ? (room.creatorType === 'korean' ? 'japanese' : 'korean') : room.creatorType;
                 game.status = 'finished';
                 game.winner = winnerRole;
                 game.winnerReason = '상대방 퇴장';
@@ -99,7 +89,6 @@ router.post('/leave', async (req, res) => {
             await Room.deleteOne({ roomId });
             return res.json({ message: '방 해산됨', role: 'host' });
         } 
-        
         if (room.guestId === userId) {
             room.guestId = null;
             room.status = 'waiting';
@@ -111,7 +100,7 @@ router.post('/leave', async (req, res) => {
     } catch (err) { res.status(500).json({ error: '오류' }); }
 });
 
-// 5. 대기실 상태 조회 (타임아웃 시간)
+// 5. 방 상태 조회 (대기실 타임아웃)
 router.get('/:roomId', async (req, res) => {
     const { roomId } = req.params;
     const { userId } = req.query;
@@ -121,39 +110,31 @@ router.get('/:roomId', async (req, res) => {
         if (!room) return res.status(404).json({ error: '방이 삭제되었습니다.', status: 'deleted' });
 
         const now = Date.now();
-
         if (userId) {
             if (userId === room.creatorId) room.lastActive.host = now;
             else if (userId === room.guestId) room.lastActive.guest = now;
         }
 
-        const HOST_TIMEOUT = 180000;  // 3분 (방장)
-        const GUEST_TIMEOUT = 120000;  // 2분 (게스트)
+        const HOST_TIMEOUT = 180000;  // 3분
+        const GUEST_TIMEOUT = 120000; // 2분
 
-        // (A) 방장 잠수 체크
-        if (now - new Date(room.lastActive.host).getTime() > HOST_TIMEOUT) {
-            await Room.deleteOne({ roomId });
-            console.log(`방장 3분 잠수로 방 삭제: ${roomId}`);
-            return res.status(404).json({ error: '방장이 응답이 없어 방이 삭제되었습니다.', status: 'deleted' });
-        }
-
-        // (B) 게스트 잠수 체크
-        if (room.guestId && (now - new Date(room.lastActive.guest).getTime() > GUEST_TIMEOUT)) {
-            console.log(`게스트 2분 잠수로 퇴장 처리: ${roomId}`);
-            room.guestId = null;
-            room.status = 'waiting';
-            room.gameId = null;
-            await room.save();
+        if (room.status === 'waiting') {
+            if (now - new Date(room.lastActive.host).getTime() > HOST_TIMEOUT) {
+                await Room.deleteOne({ roomId });
+                return res.status(404).json({ error: '방장 잠수로 삭제됨', status: 'deleted' });
+            }
+            if (room.guestId && (now - new Date(room.lastActive.guest).getTime() > GUEST_TIMEOUT)) {
+                room.guestId = null;
+                room.gameId = null;
+                await room.save();
+            }
         } else {
             if (userId) await room.save();
         }
-
         res.json(room);
-
     } catch (err) { res.status(500).json({ error: '오류' }); }
 });
 
-// 6. 게임 연결
 router.post('/:roomId/link', async (req, res) => {
     const { gameId } = req.body;
     try {
