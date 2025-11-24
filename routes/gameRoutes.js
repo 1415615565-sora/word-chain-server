@@ -4,48 +4,32 @@ const { v4: uuidv4 } = require('uuid');
 const Game = require('../models/Game');
 const Room = require('../models/Room');
 const { translateWord } = require('../utils/translator');
-const { checkWordExists, fetchRandomWord } = require('../utils/dictionary');
+const { checkWordExists } = require('../utils/dictionary');
 const { verifyShiritoriRule } = require('../utils/gameRules');
 
-const FALLBACK_WORDS = [
-    { ko: '나무', ja: '木(き)' }, { ko: '바다', ja: '海(うみ)' },
-    { ko: '하늘', ja: '空(そら)' }, { ko: '학교', ja: '学校(がっこう)' },
-    { ko: '학생', ja: '学生(がくせい)' }, { ko: '친구', ja: '友達(ともだち)' }
+// 🔙 [복구] 고정된 시작 단어 리스트 (이 중에서 랜덤 선택)
+const STARTING_WORDS = [
+    { ko: '나무', ja: '木(き)' }, 
+    { ko: '바다', ja: '海(うみ)' },
+    { ko: '하늘', ja: '空(そら)' }, 
+    { ko: '학교', ja: '学校(がっこう)' },
+    { ko: '학생', ja: '学生(がくせい)' }, 
+    { ko: '친구', ja: '友達(ともだち)' },
+    { ko: '사랑', ja: '愛(あい)' },
+    { ko: '가족', ja: '家族(かぞく)' },
+    { ko: '동물', ja: '動物(どうぶつ)' },
+    { ko: '음악', ja: '音楽(おんがく)' }
 ];
 
-// 1. 게임 시작
+// 1. 게임 시작 (고정 리스트 사용 + 3초 카운트다운)
 router.post('/start', async (req, res) => {
     const { roomId, koreanPlayerId, japanesePlayerId } = req.body;
     const gameId = uuidv4();
-    const startTime = Date.now() + 3000;
+    const startTime = Date.now() + 3000; // 3초 대기
 
     try {
-        let startWord = null;
-        const startLang = Math.random() < 0.5 ? 'ko' : 'ja';
-        const randomDictWord = await fetchRandomWord(startLang);
-
-        if (randomDictWord) {
-            const targetLang = startLang === 'ko' ? 'ja' : 'ko';
-            let translated = await translateWord(randomDictWord.word, startLang, targetLang);
-
-            if (targetLang === 'ja') {
-                const check = await checkWordExists(translated, 'ja');
-                if (check.isValid && check.reading !== translated) {
-                    translated = `${translated}(${check.reading})`;
-                }
-            }
-            let displaySource = randomDictWord.word;
-            if (startLang === 'ja' && randomDictWord.word !== randomDictWord.reading) {
-                displaySource = `${randomDictWord.word}(${randomDictWord.reading})`;
-            }
-
-            startWord = {
-                ko: startLang === 'ko' ? displaySource : translated,
-                ja: startLang === 'ja' ? displaySource : translated
-            };
-        } else {
-            startWord = FALLBACK_WORDS[Math.floor(Math.random() * FALLBACK_WORDS.length)];
-        }
+        // 🎲 [복구된 로직] 리스트에서 랜덤으로 하나 뽑기 (API 호출 안 함)
+        const startWord = STARTING_WORDS[Math.floor(Math.random() * STARTING_WORDS.length)];
 
         await Game.create({
             gameId, roomId,
@@ -58,11 +42,16 @@ router.post('/start', async (req, res) => {
             lastActive: { korean: Date.now(), japanese: Date.now() },
             history: []
         });
+        
+        console.log(`🎮 게임 시작 (ID: ${gameId}, 단어: ${startWord.ko})`);
         res.json({ message: '게임 생성 완료', gameId, startTime });
-    } catch (e) { res.status(500).json({ error: '생성 실패' }); }
+    } catch (e) { 
+        console.error(e);
+        res.status(500).json({ error: '생성 실패' }); 
+    }
 });
 
-// 2. 단어 제출
+// 2. 단어 제출 (기존 최신 로직 유지)
 router.post('/:gameId/submit', async (req, res) => {
     const { gameId } = req.params;
     const { userId, playerType, word } = req.body;
@@ -82,6 +71,7 @@ router.post('/:gameId/submit', async (req, res) => {
 
         if (game.timers[playerType] <= 0) return await endGame(game, playerType === 'korean' ? 'japanese' : 'korean', '시간 초과', res);
 
+        // 중복 검사
         const cleanInput = word.split('(')[0];
         const isDuplicate = game.history.some(h => {
             const cleanHistoryWord = h.word.split('(')[0];
@@ -90,17 +80,21 @@ router.post('/:gameId/submit', async (req, res) => {
         });
         if (isDuplicate) return await applyPenalty(game, playerType, 5, '이미 사용된 단어입니다', res);
 
+        // 사전 검사
         const dictResult = await checkWordExists(word, playerType);
         if (!dictResult.isValid) return await applyPenalty(game, playerType, 5, '사전에 없는 단어입니다.', res);
 
+        // 규칙 검사
         const previousWordRaw = playerType === 'korean' ? game.currentWord.ko : game.currentWord.ja;
         const ruleCheck = verifyShiritoriRule(previousWordRaw, dictResult.reading);
         if (!ruleCheck.isValid) return await applyPenalty(game, playerType, 5, `땡! '${ruleCheck.requiredSound}'(으)로 시작하세요`, res);
 
+        // 패배 조건 ('ん', 'ン')
         if (playerType === 'japanese' && (dictResult.reading.trim().endsWith('ん') || dictResult.reading.trim().endsWith('ン'))) {
              return await endGame(game, 'korean', `'ん(ン)'으로 끝남`, res);
         }
 
+        // 번역 및 교차 검증
         const sourceLang = playerType === 'korean' ? 'ko' : 'ja';
         const targetLang = playerType === 'korean' ? 'ja' : 'ko';
         let translatedText = await translateWord(word, sourceLang, targetLang);
@@ -142,7 +136,7 @@ router.post('/:gameId/submit', async (req, res) => {
     }
 });
 
-// 3. 상태 조회
+// 3. 상태 조회 (잠수 체크 삭제됨, 타이머만 동작)
 router.get('/:gameId/status', async (req, res) => {
     const { gameId } = req.params;
     const { playerType } = req.query;
@@ -174,11 +168,14 @@ router.get('/:gameId/status', async (req, res) => {
     } catch (error) { res.status(500).json({ error: '실패' }); }
 });
 
+// (수정됨: 게임이 끝나도 방 삭제 안 함)
 async function endGame(game, winner, reason, res) {
     game.status = 'finished';
     game.winner = winner;
     game.winnerReason = reason;
     await game.save();
+    
+    // Room.deleteOne 삭제됨 (게스트가 결과 화면 볼 수 있게)
     
     return res.json({ message: `${reason} 패배!`, gameData: game });
 }

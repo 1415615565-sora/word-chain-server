@@ -1,35 +1,19 @@
 const axios = require('axios');
 const https = require('https');
 
-// 🔑 API 키 (대괄호/공백 자동 제거)
-let NIKL_API_KEY = '15F65D064F161D386D3FCB9B997802E2'; 
+// 🔑 API 키
+const NIKL_API_KEY = '15F65D064F161D386D3FCB9B997802E2'; 
 
 const httpsAgent = new https.Agent({ rejectUnauthorized: false });
 
-const KO_SEEDS = ['가', '나', '다', '라', '마', '바', '사', '아', '자', '차', '카', '타', '파', '하', '물', '불', '흙', '산', '강', '밥', '집', '옷', '꽃', '달', '해', '별'];
-const JA_SEEDS = ['あ', 'い', 'う', 'え', 'お', 'か', 'き', 'く', 'け', 'こ', 'さ', 'し', 'す', 'せ', 'そ', 'た', 'ち', 'つ', 'て', 'と'];
-
 /**
  * 🧹 문자열 청소 함수 (특수문자 제거)
- * 예: "자전거^" -> "자전거", "하다-1" -> "하다"
  */
 function cleanString(str, lang) {
     if (!str) return "";
-    
-    let cleaned = str;
-    
-    // 1. 설명문이나 번호는 잘라냄
-    cleaned = cleaned.split('(')[0]; // 괄호 뒤 제거
-    cleaned = cleaned.split('-')[0]; // - 번호 제거
-    
-    // 2. 특수기호는 '제거' (자르면 안 됨!)
-    cleaned = cleaned.replace(/\^/g, ''); // ^ 제거
-    cleaned = cleaned.replace(/~/g, '');  // ~ 제거
-
-    // 3. 언어별 필터링
+    let cleaned = str.split('(')[0].split('^')[0].split('-')[0].split('~')[0];
     if (lang === 'ko') cleaned = cleaned.replace(/[^가-힣]/g, '');
     else if (lang === 'ja') cleaned = cleaned.replace(/[^\u4e00-\u9faf\u3040-\u309f\u30a0-\u30ff\u30fc]/g, '');
-    
     return cleaned.trim();
 }
 
@@ -45,68 +29,6 @@ function toHiragana(str) {
 }
 
 /**
- * 🎲 랜덤 단어 가져오기 (우리말샘 사용)
- */
-async function fetchRandomWord(lang) {
-    const cleanKey = NIKL_API_KEY.replace(/[\[\]\s]/g, '');
-
-    try {
-        if (lang === 'ko') {
-            const seed = KO_SEEDS[Math.floor(Math.random() * KO_SEEDS.length)];
-            // ✅ 우리말샘 URL 사용
-            const url = 'https://opendict.korean.go.kr/api/search';
-
-            console.log(`📡 [한국어] 랜덤 요청: "${seed}"`);
-
-            const response = await axios.get(url, {
-                params: {
-                    key: cleanKey,
-                    q: seed,
-                    req_type: 'json',
-                    advanced: 'y',
-                    part: 'word',
-                    pos: '1',     // 명사
-                    num: 30,
-                    sort: 'popular',
-                    method: 'include',
-                    type1: 'word'
-                },
-                httpsAgent: httpsAgent,
-                timeout: 5000
-            });
-
-            const data = response.data;
-            if (typeof data === 'string') return null; // XML 에러 등
-
-            const items = data?.channel?.item;
-            if (items && items.length > 0) {
-                const randomItem = items[Math.floor(Math.random() * items.length)];
-                const cleanWord = cleanString(randomItem.word, 'ko');
-                console.log(`✅ [한국어] 랜덤 성공: ${cleanWord}`);
-                return { word: cleanWord, reading: cleanWord, lang: 'ko' };
-            }
-        } 
-        else if (lang === 'ja') {
-            const seed = JA_SEEDS[Math.floor(Math.random() * JA_SEEDS.length)];
-            const url = `https://jisho.org/api/v1/search/words?keyword=${encodeURIComponent(seed)}`;
-            
-            const response = await axios.get(url, { headers: { 'User-Agent': 'Mozilla/5.0' }, timeout: 5000 });
-            const candidates = response.data.data.slice(0, 20).filter(item => item.senses.some(sense => sense.parts_of_speech.some(pos => pos.toLowerCase().includes('noun'))));
-
-            if (candidates.length > 0) {
-                const randomItem = candidates[Math.floor(Math.random() * candidates.length)];
-                const jaData = randomItem.japanese[0];
-                const word = cleanString(jaData.word || jaData.reading, 'ja');
-                const reading = toHiragana(cleanString(jaData.reading || jaData.word, 'ja'));
-                console.log(`✅ [일본어] 랜덤 성공: ${word}`);
-                return { word, reading, lang: 'ja' };
-            }
-        }
-    } catch (error) { console.error(`🚨 랜덤 실패:`, error.message); }
-    return null;
-}
-
-/**
  * 통합 검사 함수
  */
 async function checkWordExists(word, lang) {
@@ -116,86 +38,12 @@ async function checkWordExists(word, lang) {
     return { isValid: true, reading: word };
 }
 
-// 🇰🇷 한국어 단어 검사 (핵심 수정됨 ⭐)
-async function checkKoreanWord(word) {
-    if (/[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff]/.test(word)) return { isValid: false };
-    
-    const cleanKey = NIKL_API_KEY.replace(/[\[\]\s]/g, '');
-    
-    // 🚀 [수정] 'stdict'(표준) -> 'opendict'(우리말샘)으로 변경!
-    // 우리말샘이 품사 정보(pos)를 훨씬 정확하게 줍니다.
-    const url = 'https://opendict.korean.go.kr/api/search';
-    
-    try {
-        const response = await axios.get(url, {
-            params: {
-                key: cleanKey,
-                q: word,
-                req_type: 'json',
-                advanced: 'y',
-                part: 'word',
-                method: 'exact', // 정확히 일치하는 단어만 검색
-                pos: '1',        // 명사만 요청
-                num: 10 
-            },
-            httpsAgent: httpsAgent,
-            timeout: 5000
-        });
-
-        const data = response.data;
-        
-        // XML 에러(키 오류 등) 체크
-        if (typeof data === 'string') {
-            console.error(`⚠️ [한국어 API 에러] ${data.substring(0, 100)}`);
-            return { isValid: false };
-        }
-
-        // 검색 결과가 아예 없으면 실패
-        if (!data || !data.channel || data.channel.total <= 0) {
-            console.log(`❌ [한국어] '${word}' 사전에 없음`);
-            return { isValid: false };
-        }
-        
-        // 결과 중에서 '진짜 명사'가 있는지 확인
-        const validItem = data.channel.item.find(item => {
-            // 1. 단어 청소 ("자전거^" -> "자전거")
-            const apiWord = cleanString(item.word, 'ko');
-            
-            // 2. 단어 일치 여부 확인
-            const isMatch = apiWord === word;
-            
-            // 3. 품사 확인
-            // 우리말샘은 "명사", "대명사", "수사" 등으로 줍니다.
-            const isNoun = item.pos.includes('명사') || item.pos.includes('대명사') || item.pos.includes('수사');
-            
-            // (디버깅용) 실패한 단어의 정보 출력
-            if (isMatch && !isNoun) {
-                console.log(`⚠️ [탈락] ${apiWord} (품사: ${item.pos}) -> 명사가 아님`);
-            }
-
-            return isMatch && isNoun;
-        });
-
-        if (validItem) {
-            console.log(`✅ [한국어] '${word}' 통과! (품사: ${validItem.pos})`);
-            return { isValid: true, reading: word };
-        } else {
-            console.log(`❌ [한국어] '${word}' 매칭되는 명사 없음 (검색된 다른 단어들만 존재)`);
-            return { isValid: false };
-        }
-
-    } catch (error) { 
-        console.error(`🚨 [한국어 통신 에러]`, error.message);
-        return { isValid: false }; 
-    }
-}
-
-// 🇯🇵 일본어 단어 검사 (기존 유지)
+// 🇯🇵 일본어 검사 (Jisho)
 async function checkJapaneseWord(word) {
     if (/[가-힣]/.test(word)) return { isValid: false };
     const url = `https://jisho.org/api/v1/search/words?keyword=${encodeURIComponent(word)}`;
     try {
-        const response = await axios.get(url, { headers: { 'User-Agent': 'Mozilla/5.0' } });
+        const response = await axios.get(url, { headers: { 'User-Agent': 'Mozilla/5.0' }, timeout: 5000 });
         const data = response.data;
         if (data.meta.status === 200 && data.data.length > 0) {
             const firstResult = data.data[0];
@@ -203,6 +51,7 @@ async function checkJapaneseWord(word) {
             if (!isNoun) return { isValid: false };
             
             const foundJa = firstResult.japanese[0];
+            // 읽기 변환 적용
             const reading = toHiragana(cleanString(foundJa.reading || foundJa.word, 'ja'));
             return { isValid: true, reading: reading };
         }
@@ -210,4 +59,49 @@ async function checkJapaneseWord(word) {
     } catch (error) { return { isValid: true, reading: word }; }
 }
 
-module.exports = { checkWordExists, fetchRandomWord };
+// 🇰🇷 한국어 검사 (우리말샘 opendict + exact 검색)
+async function checkKoreanWord(word) {
+    if (/[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff]/.test(word)) return { isValid: false };
+    
+    const cleanKey = NIKL_API_KEY.replace(/[\[\]\s]/g, '');
+    const url = 'https://opendict.korean.go.kr/api/search'; // .do 없는 URL 확인
+    
+    try {
+        const response = await axios.get(url, {
+            params: {
+                key: cleanKey, q: word, req_type: 'json', advanced: 'y', part: 'word',
+                method: 'exact', // 정확 일치
+                pos: '1', // 명사
+                num: 10 
+            },
+            httpsAgent: httpsAgent, timeout: 5000
+        });
+
+        const data = response.data;
+        
+        if (typeof data === 'string') {
+            console.error(`⚠️ [한국어 에러] ${data.substring(0, 100)}`);
+            return { isValid: false };
+        }
+
+        if (!data || !data.channel || data.channel.total <= 0) return { isValid: false };
+        
+        const validItem = data.channel.item.find(item => {
+            const apiWord = cleanString(item.word, 'ko');
+            const isMatch = apiWord === word;
+            const isNoun = item.pos.includes('명사') || item.pos.includes('대명사') || item.pos.includes('수사');
+            return isMatch && isNoun;
+        });
+
+        if (validItem) {
+            console.log(`✅ [한국어] '${word}' 통과`);
+            return { isValid: true, reading: word };
+        } else {
+            console.log(`❌ [한국어] '${word}' 명사 아님`);
+            return { isValid: false };
+        }
+
+    } catch (error) { return { isValid: false }; }
+}
+
+module.exports = { checkWordExists };
