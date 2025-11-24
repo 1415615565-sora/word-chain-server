@@ -2,7 +2,7 @@ const axios = require('axios');
 const https = require('https');
 
 // 🔑 [중요] 국립국어원 API 키를 여기에 반드시 넣어야 합니다! (따옴표 안에)
-const NIKL_API_KEY = '여기에_발급받은_API_키를_넣으세요'; 
+const NIKL_API_KEY = '15F65D064F161D386D3FCB9B997802E2'; 
 
 // 공공기관 사이트 접속 시 SSL 에러 무시 설정 (필수)
 const httpsAgent = new https.Agent({  
