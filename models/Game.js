@@ -10,6 +10,7 @@ const GameSchema = new mongoose.Schema({
     currentTurn: { type: String, enum: ['korean', 'japanese'] },
     status: { type: String, default: 'playing' },
     winner: { type: String, default: null },
+    winnerReason: { type: String, default: null },
     currentWord: { 
         ko: String, 
         ja: String 
@@ -18,7 +19,13 @@ const GameSchema = new mongoose.Schema({
         korean: { type: Number, default: 90 },
         japanese: { type: Number, default: 90 }
     },
-    lastTurnStart: { type: Number }, // 시간 계산용
+    startTime: { type: Number }, 
+    
+    lastActive: {
+        korean: { type: Date, default: Date.now },
+        japanese: { type: Date, default: Date.now }
+    },
+    lastTurnStart: { type: Number },
     history: [{
         word: String,
         translated: String,
