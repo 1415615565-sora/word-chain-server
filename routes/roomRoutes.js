@@ -48,7 +48,16 @@ router.get('/', async (req, res) => {
     const { playerType } = req.query;
     
     try {
+        const now = Date.now();
+        const TIMEOUT = 10000; // 10초 이상 잠수면 죽은 방으로 간주
+        // 1. 죽은 방 삭제 (방장이 10초간 활동이 없는 대기방)
+        // (주의: MongoDB 쿼리로 한 번에 삭제)
+        await Room.deleteMany({
+            status: 'waiting',
+            'lastActive.host': { $lt: new Date(now - TIMEOUT) }
+        });
         const query = { status: 'waiting' };
+        // 내 국적과 반대인 방만 보여주기 (옵션)
         if (playerType === 'korean') query.creatorType = 'japanese';
         else if (playerType === 'japanese') query.creatorType = 'korean';
 
@@ -58,9 +67,10 @@ router.get('/', async (req, res) => {
             roomId: r.roomId,
             roomName: r.roomName,
             creatorType: r.creatorType,
-            hasPassword: !!r.password // 비밀번호 존재 여부만 전달
+            hasPassword: !!r.password
         })));
     } catch (err) {
+        console.error(err);
         res.status(500).json({ error: '목록 조회 실패' });
     }
 });

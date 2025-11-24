@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const { v4: uuidv4 } = require('uuid');
 const Game = require('../models/Game');
+const Room = require('../models/Room'); //방 삭제를 위해 Room 모델 불러오기
 const { translateWord } = require('../utils/translator');
 const { checkWordExists } = require('../utils/dictionary');
 const { verifyShiritoriRule } = require('../utils/gameRules');
@@ -59,12 +60,11 @@ router.post('/:gameId/submit', async (req, res) => {
 
         if (game.timers[playerType] <= 0) return await endGame(game, playerType === 'korean' ? 'japanese' : 'korean', '시간 초과', res);
 
-        // [1] 중복 검사
+        // [1] 중복 검사 (수정된 로직 적용)
         const cleanInput = word.split('(')[0];
-
         const isDuplicate = game.history.some(h => {
-            const cleanHistoryWord = h.word.split('(')[0];       // 기록된 원본 단어
-            const cleanHistoryTranslated = h.translated.split('(')[0]; // 기록된 번역 단어
+            const cleanHistoryWord = h.word.split('(')[0];
+            const cleanHistoryTranslated = h.translated.split('(')[0];
             return cleanHistoryWord === cleanInput || cleanHistoryTranslated === cleanInput;
         });
 
@@ -72,47 +72,34 @@ router.post('/:gameId/submit', async (req, res) => {
             return await applyPenalty(game, playerType, 5, '이미 사용된 단어(또는 번역어)입니다', res);
         }
 
-        // [2] 입력 언어 사전 검사
+        // [2] 사전 검사
         const dictResult = await checkWordExists(word, playerType);
-        if (!dictResult.isValid) {
-            return await applyPenalty(game, playerType, 5, '사전에 없는 단어입니다.', res);
-        }
+        if (!dictResult.isValid) return await applyPenalty(game, playerType, 5, '사전에 없는 단어입니다.', res);
 
-        // [3] 끝말잇기 규칙 검사
+        // [3] 규칙 검사
         const previousWordRaw = playerType === 'korean' ? game.currentWord.ko : game.currentWord.ja;
         const ruleCheck = verifyShiritoriRule(previousWordRaw, dictResult.reading);
-        
-        if (!ruleCheck.isValid) {
-            return await applyPenalty(game, playerType, 5, `땡! '${ruleCheck.requiredSound}'(으)로 시작하세요`, res);
+        if (!ruleCheck.isValid) return await applyPenalty(game, playerType, 5, `땡! '${ruleCheck.requiredSound}'(으)로 시작하세요`, res);
+
+        if (playerType === 'japanese' && dictResult.reading.trim().endsWith('ん')) {
+             return await endGame(game, 'korean', `'ん'으로 끝남`, res);
         }
 
-        // [4] 입력한 단어가 'ん'으로 끝나는지 검사 (일본어 플레이어의 경우)
-        if (dictResult.reading.trim().endsWith('ん')) {
-             return await endGame(game, playerType === 'korean' ? 'japanese' : 'korean', `'ん'으로 끝남`, res);
-        }
-
-        // [5] 번역 수행
+        // [4] 번역
         const sourceLang = playerType === 'korean' ? 'ko' : 'ja';
         const targetLang = playerType === 'korean' ? 'ja' : 'ko';
         let translatedText = await translateWord(word, sourceLang, targetLang);
 
-        // [6] 교차 검증 (Cross-Validation)
+        // [5] 교차 검증
         const transCheck = await checkWordExists(translatedText, targetLang);
-        
         if (!transCheck.isValid) {
-            return await applyPenalty(game, playerType, 5, 
-                `단어는 맞지만, 번역된 결과(${translatedText})가 상대방 사전에 없어 사용할 수 없습니다.`, 
-                res
-            );
+            return await applyPenalty(game, playerType, 5, `번역된 결과(${translatedText})가 사전에 없어 사용할 수 없습니다.`, res);
         }
 
-        //번역된 일본어 단어가 'ん'으로 끝나는지 확인
         if (targetLang === 'ja' && transCheck.reading.trim().endsWith('ん')) {
-            return await endGame(game, playerType === 'korean' ? 'japanese' : 'korean', 
-                `번역된 단어(${translatedText})가 'ん'(응)으로 끝나 패배!`, res);
+            return await endGame(game, playerType === 'korean' ? 'japanese' : 'korean', `번역된 단어(${translatedText})가 'ん'으로 끝남`, res);
         }
 
-        // 후리가나 처리
         if (targetLang === 'ja' && transCheck.reading !== translatedText) {
             translatedText = `${translatedText}(${transCheck.reading})`;
         }
@@ -122,7 +109,6 @@ router.post('/:gameId/submit', async (req, res) => {
             displayWord = `${word}(${dictResult.reading})`;
         }
 
-        // 저장
         game.currentWord = {
             ko: playerType === 'korean' ? displayWord : translatedText,
             ja: playerType === 'japanese' ? displayWord : translatedText
@@ -159,11 +145,18 @@ router.get('/:gameId/status', async (req, res) => {
             
                 const opponent = playerType === 'korean' ? 'japanese' : 'korean';
                 const lastSeen = new Date(game.lastActive[opponent]).getTime();
+                
+                // 15초 동안 연락 없으면 게임 종료
                 if (now - lastSeen > 15000) {
                     game.status = 'finished';
                     game.winner = playerType;
                     game.winnerReason = '상대방 연결 끊김';
                     await game.save();
+
+                    // 게임이 끊겼으므로 방도 같이 삭제 (청소)
+                    await Room.deleteOne({ roomId: game.roomId });
+                    console.log(`🧹 게임 종료(연결 끊김)로 인해 방 삭제됨: ${game.roomId}`);
+
                     return res.json(game);
                 }
             }
@@ -177,11 +170,8 @@ router.get('/:gameId/status', async (req, res) => {
                 responseData.timers[game.currentTurn] = Math.max(0, game.timers[game.currentTurn] - elapsed);
                 
                 if (responseData.timers[game.currentTurn] <= 0) {
-                    game.status = 'finished';
-                    game.winner = game.currentTurn === 'korean' ? 'japanese' : 'korean';
-                    game.winnerReason = '시간 초과';
-                    await game.save();
-                    responseData = game.toObject();
+                    // 시간 초과 처리
+                    return await endGame(game, game.currentTurn === 'korean' ? 'japanese' : 'korean', '시간 초과', res);
                 }
             }
         }
@@ -189,11 +179,17 @@ router.get('/:gameId/status', async (req, res) => {
     } catch (error) { res.status(500).json({ error: '실패' }); }
 });
 
+// 헬퍼 함수: 게임 종료 처리
 async function endGame(game, winner, reason, res) {
     game.status = 'finished';
     game.winner = winner;
     game.winnerReason = reason;
     await game.save();
+
+    //정상적인 종료(승패 결정) 시에도 방 삭제
+    await Room.deleteOne({ roomId: game.roomId });
+    console.log(`🧹 게임 종료(${reason})로 인해 방 삭제됨: ${game.roomId}`);
+
     return res.json({ message: `${reason} 패배!`, gameData: game });
 }
 
