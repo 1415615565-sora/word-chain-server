@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const { v4: uuidv4 } = require('uuid');
 const Game = require('../models/Game');
-const Room = require('../models/Room'); //방 삭제를 위해 Room 모델 불러오기
+const Room = require('../models/Room');
 const { translateWord } = require('../utils/translator');
 const { checkWordExists } = require('../utils/dictionary');
 const { verifyShiritoriRule } = require('../utils/gameRules');
@@ -60,7 +60,7 @@ router.post('/:gameId/submit', async (req, res) => {
 
         if (game.timers[playerType] <= 0) return await endGame(game, playerType === 'korean' ? 'japanese' : 'korean', '시간 초과', res);
 
-        // [1] 중복 검사 (수정된 로직 적용)
+        // [1] 중복 검사
         const cleanInput = word.split('(')[0];
         const isDuplicate = game.history.some(h => {
             const cleanHistoryWord = h.word.split('(')[0];
@@ -76,13 +76,15 @@ router.post('/:gameId/submit', async (req, res) => {
         const dictResult = await checkWordExists(word, playerType);
         if (!dictResult.isValid) return await applyPenalty(game, playerType, 5, '사전에 없는 단어입니다.', res);
 
-        // [3] 규칙 검사
+        // [3] 끝말잇기 규칙 검사
         const previousWordRaw = playerType === 'korean' ? game.currentWord.ko : game.currentWord.ja;
         const ruleCheck = verifyShiritoriRule(previousWordRaw, dictResult.reading);
         if (!ruleCheck.isValid) return await applyPenalty(game, playerType, 5, `땡! '${ruleCheck.requiredSound}'(으)로 시작하세요`, res);
 
-        if (playerType === 'japanese' && dictResult.reading.trim().endsWith('ん')) {
-             return await endGame(game, 'korean', `'ん'으로 끝남`, res);
+        // 🚀 [수정됨] 일본어 플레이어가 입력한 단어가 'ん' 또는 'ン'으로 끝나는지 확인
+        const reading = dictResult.reading.trim();
+        if (playerType === 'japanese' && (reading.endsWith('ん') || reading.endsWith('ン'))) {
+             return await endGame(game, 'korean', `'ん(ン)'으로 끝남`, res);
         }
 
         // [4] 번역
@@ -96,8 +98,14 @@ router.post('/:gameId/submit', async (req, res) => {
             return await applyPenalty(game, playerType, 5, `번역된 결과(${translatedText})가 사전에 없어 사용할 수 없습니다.`, res);
         }
 
-        if (targetLang === 'ja' && transCheck.reading.trim().endsWith('ん')) {
-            return await endGame(game, playerType === 'korean' ? 'japanese' : 'korean', `번역된 단어(${translatedText})가 'ん'으로 끝남`, res);
+        // 🚀 [수정됨] 번역된 일본어 단어가 'ん' 또는 'ン'으로 끝나는지 확인
+        // 예: '라면' -> 'ラーメン'(라-멘) -> 패배
+        if (targetLang === 'ja') {
+            const transReading = transCheck.reading.trim();
+            if (transReading.endsWith('ん') || transReading.endsWith('ン')) {
+                return await endGame(game, playerType === 'korean' ? 'japanese' : 'korean', 
+                    `번역된 단어(${translatedText})가 'ん(ン)'으로 끝나 패배!`, res);
+            }
         }
 
         if (targetLang === 'ja' && transCheck.reading !== translatedText) {
@@ -126,6 +134,7 @@ router.post('/:gameId/submit', async (req, res) => {
     }
 });
 
+// ... (status, endGame 등 나머지 코드는 기존과 동일)
 // 3. 상태 조회
 router.get('/:gameId/status', async (req, res) => {
     const { gameId } = req.params;
@@ -146,17 +155,12 @@ router.get('/:gameId/status', async (req, res) => {
                 const opponent = playerType === 'korean' ? 'japanese' : 'korean';
                 const lastSeen = new Date(game.lastActive[opponent]).getTime();
                 
-                // 15초 동안 연락 없으면 게임 종료
                 if (now - lastSeen > 15000) {
                     game.status = 'finished';
                     game.winner = playerType;
                     game.winnerReason = '상대방 연결 끊김';
                     await game.save();
-
-                    // 게임이 끊겼으므로 방도 같이 삭제 (청소)
                     await Room.deleteOne({ roomId: game.roomId });
-                    console.log(`🧹 게임 종료(연결 끊김)로 인해 방 삭제됨: ${game.roomId}`);
-
                     return res.json(game);
                 }
             }
@@ -170,7 +174,6 @@ router.get('/:gameId/status', async (req, res) => {
                 responseData.timers[game.currentTurn] = Math.max(0, game.timers[game.currentTurn] - elapsed);
                 
                 if (responseData.timers[game.currentTurn] <= 0) {
-                    // 시간 초과 처리
                     return await endGame(game, game.currentTurn === 'korean' ? 'japanese' : 'korean', '시간 초과', res);
                 }
             }
@@ -179,17 +182,12 @@ router.get('/:gameId/status', async (req, res) => {
     } catch (error) { res.status(500).json({ error: '실패' }); }
 });
 
-// 헬퍼 함수: 게임 종료 처리
 async function endGame(game, winner, reason, res) {
     game.status = 'finished';
     game.winner = winner;
     game.winnerReason = reason;
     await game.save();
-
-    //정상적인 종료(승패 결정) 시에도 방 삭제
     await Room.deleteOne({ roomId: game.roomId });
-    console.log(`🧹 게임 종료(${reason})로 인해 방 삭제됨: ${game.roomId}`);
-
     return res.json({ message: `${reason} 패배!`, gameData: game });
 }
 
