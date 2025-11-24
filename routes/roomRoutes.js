@@ -4,31 +4,41 @@ const { v4: uuidv4 } = require('uuid');
 const Room = require('../models/Room');
 const Game = require('../models/Game');
 
-// 1. 방 생성 (비밀번호 4자리 제한 추가됨)
+// 1. 방 생성
 router.post('/create', async (req, res) => {
     const { userId, playerType, roomName, password } = req.body;
     
-    // 비밀번호가 입력되었는데 4자리가 아니거나 숫자가 아니면 에러 처리
+    // 비밀번호 유효성 검사 (기존 유지)
     if (password) {
-        // 정규식 설명: ^\d{4}$ -> 처음부터 끝까지 숫자(\d)가 정확히 4개({4})여야 함
         if (!/^\d{4}$/.test(password)) {
             return res.status(400).json({ error: '비밀번호는 4자리 숫자여야 합니다.' });
         }
     }
 
     try {
+        const deletedRooms = await Room.deleteMany({ creatorId: userId });
+        if (deletedRooms.deletedCount > 0) {
+            console.log(`🧹 유저(${userId})의 이전 방 ${deletedRooms.deletedCount}개 삭제됨 (중복 생성 방지)`);
+        }
+        await Room.updateMany(
+            { guestId: userId }, 
+            { $set: { guestId: null, status: 'waiting', gameId: null } }
+        );
+
         const newRoom = await Room.create({
             roomId: uuidv4(),
             roomName,
-            // 비밀번호가 있으면 저장, 없으면 null
             password: password || null,
             creatorId: userId,
             creatorType: playerType,
-            status: 'waiting'
+            status: 'waiting',
+            lastActive: { host: Date.now(), guest: Date.now() } // 초기화
         });
+        
         res.json({ message: '방 생성 성공', roomId: newRoom.roomId });
+
     } catch (err) {
-        console.error(err);
+        console.error("방 생성 중 오류:", err);
         res.status(500).json({ error: '방 생성 중 오류 발생' });
     }
 });
