@@ -6,6 +6,7 @@ const Room = require('../models/Room');
 const { translateWord } = require('../utils/translator');
 const { checkWordExists } = require('../utils/dictionary');
 const { verifyShiritoriRule } = require('../utils/gameRules');
+
 // 시작 단어 리스트
 const STARTING_WORDS = [
     { ko: '나무', ja: '木(き)' }, 
@@ -129,7 +130,7 @@ router.post('/:gameId/submit', async (req, res) => {
     }
 });
 
-// 3. 상태 조회 (턴인 사람만 타임아웃 체크)
+// 3. 상태 조회 (⭐ 핵심 수정: 잠수 체크 로직 삭제됨)
 router.get('/:gameId/status', async (req, res) => {
     const { gameId } = req.params;
     const { playerType } = req.query;
@@ -142,49 +143,15 @@ router.get('/:gameId/status', async (req, res) => {
         const now = Date.now();
 
         if (game.status === 'playing') {
-            // [1] 심박수 갱신 (누구든지 요청을 보내면 생존 신고)
+            // [1] 심박수 갱신 (기능은 남겨두지만 패배 조건으로 쓰진 않음)
             if (playerType) {
-                game.lastActive[playerType] = now;
-                // DB 업데이트 (다른 필드 영향 없이 lastActive만 갱신)
                 await Game.updateOne({ gameId }, { [`lastActive.${playerType}`]: now });
             }
 
-            // [2] "현재 턴인 플레이어" 잠수 체크
-            const currentTurnPlayer = game.currentTurn; 
-            const lastActiveTime = new Date(game.lastActive[currentTurnPlayer]).getTime();
+            // 🗑️ [삭제됨] "30초 잠수 시 패배" 로직을 제거했습니다.
+            // 이제 플레이어가 아무것도 안 해도 게임은 계속 진행됩니다.
 
-            // 30초 경과 시
-            if (now - lastActiveTime > 30000) {
-                const winner = currentTurnPlayer === 'korean' ? 'japanese' : 'korean';
-    
-                game.status = 'finished';
-                game.winner = winner;
-                game.winnerReason = '상대방의 응답이 없습니다 (연결 끊김)'; //승리 사유
-                await game.save();
-
-                // 방도 같이 삭제 (청소)
-                await Room.deleteOne({ roomId: game.roomId });
-
-                return res.json(game); //남은 사람에게 "너가 이겼어"라고 알려줌
-            }
-            
-            // 현재 턴인 사람이 30초(30000ms) 동안 활동이 없으면 아웃
-            if (now - lastActiveTime > 30000) {
-                const winner = currentTurnPlayer === 'korean' ? 'japanese' : 'korean';
-                
-                game.status = 'finished';
-                game.winner = winner;
-                game.winnerReason = '상대방의 응답이 없습니다 (30초 경과)'; // 사유 변경
-                await game.save();
-
-                // 방 삭제
-                await Room.deleteOne({ roomId: game.roomId });
-                console.log(`턴 플레이어 잠수(30초)로 방 삭제: ${game.roomId}`);
-
-                return res.json(game);
-            }
-
-            // [3] 게임 타이머 및 카운트다운 로직
+            // [2] 게임 타이머 및 카운트다운 로직
             if (now < game.startTime) {
                 responseData.countdown = Math.ceil((game.startTime - now) / 1000);
                 responseData.isStarting = true; 
@@ -193,6 +160,7 @@ router.get('/:gameId/status', async (req, res) => {
                 const elapsed = (now - game.lastTurnStart) / 1000;
                 responseData.timers[game.currentTurn] = Math.max(0, game.timers[game.currentTurn] - elapsed);
                 
+                // 오직 시간이 0이 되었을 때만 게임 종료
                 if (responseData.timers[game.currentTurn] <= 0) {
                     return await endGame(game, game.currentTurn === 'korean' ? 'japanese' : 'korean', '시간 초과', res);
                 }
@@ -207,6 +175,7 @@ async function endGame(game, winner, reason, res) {
     game.winner = winner;
     game.winnerReason = reason;
     await game.save();
+    // 게임 정상 종료 시에도 방 청소
     await Room.deleteOne({ roomId: game.roomId });
     return res.json({ message: `${reason} 패배!`, gameData: game });
 }
