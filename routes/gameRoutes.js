@@ -130,7 +130,7 @@ router.post('/:gameId/submit', async (req, res) => {
     }
 });
 
-// 3. 상태 조회 (⭐ 핵심 수정: 잠수 체크 로직 삭제됨)
+// 3. 상태 조회 (잠수 체크 로직 완전 삭제)
 router.get('/:gameId/status', async (req, res) => {
     const { gameId } = req.params;
     const { playerType } = req.query;
@@ -143,24 +143,22 @@ router.get('/:gameId/status', async (req, res) => {
         const now = Date.now();
 
         if (game.status === 'playing') {
-            // [1] 심박수 갱신 (기능은 남겨두지만 패배 조건으로 쓰진 않음)
+            // [1] 심박수 갱신은 유지 (나중에 디버깅용으로 쓸 수 있음)
+            // 하지만 이걸로 게임을 끝내지는 않음!
             if (playerType) {
                 await Game.updateOne({ gameId }, { [`lastActive.${playerType}`]: now });
             }
 
-            // 🗑️ [삭제됨] "30초 잠수 시 패배" 로직을 제거했습니다.
-            // 이제 플레이어가 아무것도 안 해도 게임은 계속 진행됩니다.
-
             // [2] 게임 타이머 및 카운트다운 로직
             if (now < game.startTime) {
+                // 게임 시작 전 (카운트다운)
                 responseData.countdown = Math.ceil((game.startTime - now) / 1000);
                 responseData.isStarting = true; 
             } else {
+                // 게임 시작 후
                 responseData.isStarting = false;
                 const elapsed = (now - game.lastTurnStart) / 1000;
                 responseData.timers[game.currentTurn] = Math.max(0, game.timers[game.currentTurn] - elapsed);
-                
-                // 오직 시간이 0이 되었을 때만 게임 종료
                 if (responseData.timers[game.currentTurn] <= 0) {
                     return await endGame(game, game.currentTurn === 'korean' ? 'japanese' : 'korean', '시간 초과', res);
                 }
@@ -175,7 +173,7 @@ async function endGame(game, winner, reason, res) {
     game.winner = winner;
     game.winnerReason = reason;
     await game.save();
-    // 게임 정상 종료 시에도 방 청소
+    // 게임 정상 종료 시 방 청소
     await Room.deleteOne({ roomId: game.roomId });
     return res.json({ message: `${reason} 패배!`, gameData: game });
 }
