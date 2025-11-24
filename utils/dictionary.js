@@ -1,46 +1,28 @@
 const axios = require('axios');
 const https = require('https');
 
-// 🔑 국립국어원 API 키
+// 🔑 입력하신 API 키
 const NIKL_API_KEY = '15F65D064F161D386D3FCB9B997802E2'; 
 
+// SSL 에러 방지
 const httpsAgent = new https.Agent({ rejectUnauthorized: false });
 
 const KO_SEEDS = ['가', '나', '다', '라', '마', '바', '사', '아', '자', '차', '카', '타', '파', '하', '물', '불', '흙', '산', '강', '밥', '집', '옷', '꽃', '달', '해', '별'];
 const JA_SEEDS = ['あ', 'い', 'う', 'え', 'お', 'か', 'き', 'く', 'け', 'こ', 'さ', 'し', 'す', 'せ', 'そ', 'た', 'ち', 'つ', 'て', 'と'];
 
 /**
- * 🧹 [핵심] 문자열 청소 함수
- * 특수문자(^, -)나 괄호() 뒤의 내용을 모두 제거하고 순수 문자만 남깁니다.
+ * 🧹 문자열 청소 함수
  */
 function cleanString(str, lang) {
     if (!str) return "";
-
-    let cleaned = str;
-
-    // 1. 괄호나 특수문자가 나오면 그 뒤를 싹둑 자름
-    // 예: "나무(식물)" -> "나무"
-    // 예: "하다-2" -> "하다"
-    // 예: "나무^" -> "나무"
-    cleaned = cleaned.split('(')[0]; 
-    cleaned = cleaned.split('^')[0];
-    cleaned = cleaned.split('-')[0];
-    cleaned = cleaned.split('~')[0]; // 물결표 제거
-
-    if (lang === 'ko') {
-        // 한국어는 한글만 남김 (특수기호 완전 제거)
-        cleaned = cleaned.replace(/[^가-힣]/g, '');
-    } else if (lang === 'ja') {
-        // 일본어는 한자, 히라가나, 카타카나만 남김 (특수기호 제거)
-        // 장음(ー)은 살려야 함
-        cleaned = cleaned.replace(/[^\u4e00-\u9faf\u3040-\u309f\u30a0-\u30ff\u30fc]/g, '');
-    }
-
+    let cleaned = str.split('(')[0].split('^')[0].split('-')[0].split('~')[0];
+    if (lang === 'ko') cleaned = cleaned.replace(/[^가-힣]/g, '');
+    else if (lang === 'ja') cleaned = cleaned.replace(/[^\u4e00-\u9faf\u3040-\u309f\u30a0-\u30ff\u30fc]/g, '');
     return cleaned.trim();
 }
 
 /**
- * 🔄 헬퍼: 카타카나 -> 히라가나 변환
+ * 🔄 카타카나 -> 히라가나 변환
  */
 function toHiragana(str) {
     if (!str) return "";
@@ -51,7 +33,7 @@ function toHiragana(str) {
 }
 
 /**
- * 🎲 랜덤 단어 가져오기 (청소 로직 적용됨)
+ * 🎲 랜덤 단어 가져오기 (URL 변경 및 디버깅 강화)
  */
 async function fetchRandomWord(lang) {
     try {
@@ -59,9 +41,12 @@ async function fetchRandomWord(lang) {
 
         if (lang === 'ko') {
             const seed = KO_SEEDS[Math.floor(Math.random() * KO_SEEDS.length)];
-            const url = 'https://stdict.korean.go.kr/api/search.do';
+            
+            // 🚀 [변경 1] URL을 '우리말샘(opendict)'으로 변경
+            // (표준국어대사전 stdict 키가 아닐 경우를 대비)
+            const url = 'https://opendict.korean.go.kr/api/search.do';
 
-            console.log(`📡 [한국어] 랜덤 단어 요청: "${seed}"`);
+            console.log(`📡 [한국어] 랜덤 단어 요청: "${seed}" (URL: opendict)`);
 
             const response = await axios.get(url, {
                 params: {
@@ -81,60 +66,48 @@ async function fetchRandomWord(lang) {
             });
 
             const data = response.data;
+            
+            // 🚨 [디버깅] JSON이 아닐 경우 에러 내용 출력
             if (typeof data === 'string') {
-                console.error(`⚠️ [한국어 API 에러] JSON 아님`);
+                console.error(`⚠️ [한국어 API 에러] JSON이 아닙니다. 응답 내용 확인:`);
+                console.error(data.substring(0, 300)); // 에러 내용을 콘솔에 보여줌 (중요!)
+                
+                // 만약 키 오류라면 null 반환
                 return null;
             }
 
             const items = data?.channel?.item;
             if (items && items.length > 0) {
                 const randomItem = items[Math.floor(Math.random() * items.length)];
-                
                 const cleanWord = cleanString(randomItem.word, 'ko');
-                
-                console.log(`✅ [한국어] 가져옴: ${cleanWord} (원본: ${randomItem.word})`);
+                console.log(`✅ [한국어] 가져옴: ${cleanWord}`);
                 return { word: cleanWord, reading: cleanWord, lang: 'ko' };
             }
         } 
         else if (lang === 'ja') {
+            // (일본어 로직은 그대로 유지)
             const seed = JA_SEEDS[Math.floor(Math.random() * JA_SEEDS.length)];
             const url = `https://jisho.org/api/v1/search/words?keyword=${encodeURIComponent(seed)}`;
-            
-            console.log(`📡 [일본어] 랜덤 단어 요청: "${seed}"`);
-
-            const response = await axios.get(url, {
-                headers: { 'User-Agent': 'Mozilla/5.0' },
-                timeout: 5000
-            });
-
-            const candidates = response.data.data.slice(0, 20).filter(item => {
-                return item.senses.some(sense => 
-                    sense.parts_of_speech.some(pos => pos.toLowerCase().includes('noun'))
-                );
-            });
+            const response = await axios.get(url, { headers: { 'User-Agent': 'Mozilla/5.0' }, timeout: 5000 });
+            const candidates = response.data.data.slice(0, 20).filter(item => item.senses.some(sense => sense.parts_of_speech.some(pos => pos.toLowerCase().includes('noun'))));
 
             if (candidates.length > 0) {
                 const randomItem = candidates[Math.floor(Math.random() * candidates.length)];
                 const jaData = randomItem.japanese[0];
-                
-                const wordRaw = jaData.word || jaData.reading;
-                const readingRaw = jaData.reading || jaData.word;
-
-                const word = cleanString(wordRaw, 'ja');
-                const reading = toHiragana(cleanString(readingRaw, 'ja'));
-                
+                const word = cleanString(jaData.word || jaData.reading, 'ja');
+                const reading = toHiragana(cleanString(jaData.reading || jaData.word, 'ja'));
                 console.log(`✅ [일본어] 가져옴: ${word}(${reading})`);
                 return { word, reading, lang: 'ja' };
             }
         }
     } catch (error) {
-        console.error(`🚨 [랜덤 단어 실패] ${lang} 통신 오류:`, error.message);
+        console.error(`🚨 [랜덤 단어 실패] ${lang} 오류:`, error.message);
     }
     return null;
 }
 
 /**
- * 통합 검사 함수
+ * 통합 검사 함수 (URL 변경 적용)
  */
 async function checkWordExists(word, lang) {
     if (!word || word.trim().length === 0) return { isValid: false };
@@ -153,12 +126,8 @@ async function checkJapaneseWord(word) {
             const firstResult = data.data[0];
             const isNoun = firstResult.senses.some(sense => sense.parts_of_speech.some(pos => pos.toLowerCase().includes('noun') || pos.toLowerCase().includes('suru verb') || pos.toLowerCase().includes('pronoun')));
             if (!isNoun) return { isValid: false };
-            
             const foundJa = firstResult.japanese[0];
-            // 읽기 변환 및 청소 적용
-            const rawReading = foundJa.reading || foundJa.word;
-            const reading = toHiragana(cleanString(rawReading, 'ja'));
-            
+            const reading = toHiragana(cleanString(foundJa.reading || foundJa.word, 'ja'));
             return { isValid: true, reading: reading };
         }
         return { isValid: false };
@@ -168,17 +137,20 @@ async function checkJapaneseWord(word) {
 async function checkKoreanWord(word) {
     if (/[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff]/.test(word)) return { isValid: false };
     const cleanKey = NIKL_API_KEY.replace(/[\[\]\s]/g, '');
-    const url = 'https://stdict.korean.go.kr/api/search.do';
+    
+    // 🚀 [변경 2] 검사할 때도 '우리말샘(opendict)' 사용
+    const url = 'https://opendict.korean.go.kr/api/search.do';
+    
     try {
         const response = await axios.get(url, {
             params: { key: cleanKey, q: word, req_type: 'json', advanced: 'y', part: 'word', method: 'exact' },
             httpsAgent: httpsAgent, timeout: 5000
         });
         const data = response.data;
+        
         if (typeof data === 'string' || !data || !data.channel || data.channel.total <= 0) return { isValid: false };
         
         const validItem = data.channel.item.find(item => {
-            // 검색 결과와 입력 단어 모두 '청소' 후 비교
             const apiWord = cleanString(item.word, 'ko');
             return apiWord === word && (item.pos === '명사' || item.pos === '대명사' || item.pos === '수사');
         });
