@@ -4,7 +4,7 @@ const { v4: uuidv4 } = require('uuid');
 const Room = require('../models/Room');
 const Game = require('../models/Game');
 
-// 1. 방 만들기 (기존 유지)
+// 1. 방 만들기
 router.post('/create', async (req, res) => {
     const { userId, playerType, roomName, password } = req.body;
     
@@ -13,7 +13,6 @@ router.post('/create', async (req, res) => {
     }
 
     try {
-        // 내 명의의 이전 방들 정리
         await Room.deleteMany({ creatorId: userId });
         await Room.updateMany({ guestId: userId }, { $set: { guestId: null, status: 'waiting', gameId: null } });
 
@@ -30,13 +29,13 @@ router.post('/create', async (req, res) => {
     } catch (err) { res.status(500).json({ error: '오류' }); }
 });
 
-// 2. 방 목록 조회 (수정됨: 1분 이상 잠수 탄 방만 청소)
+// 2. 방 목록 조회 (수정됨: 3분 이상 잠수 탄 방 청소)
 router.get('/', async (req, res) => {
     const { playerType } = req.query;
     
     try {
         const now = Date.now();
-        const CLEANUP_TIMEOUT = 60000; // 1분 (방장이 1분간 연락 없으면 삭제)
+        const CLEANUP_TIMEOUT = 180000; //3분 (방장이 3분간 연락 없으면 삭제)
 
         // 죽은 방 청소
         await Room.deleteMany({
@@ -59,7 +58,7 @@ router.get('/', async (req, res) => {
     } catch (err) { res.status(500).json({ error: '실패' }); }
 });
 
-// 3. 방 입장 (기존 유지)
+// 3. 방 입장
 router.post('/join', async (req, res) => {
     const { roomId, userId, password } = req.body;
     try {
@@ -70,14 +69,13 @@ router.post('/join', async (req, res) => {
 
         room.guestId = userId;
         room.status = 'playing';
-        // 입장 시 게스트 시간 초기화
         room.lastActive.guest = Date.now(); 
         await room.save();
         res.json({ message: '성공', gameId: roomId });
     } catch (err) { res.status(500).json({ error: '실패' }); }
 });
 
-// 4. 방 나가기 (기존 유지)
+// 4. 방 나가기
 router.post('/leave', async (req, res) => {
     const { roomId, userId } = req.body;
     try {
@@ -113,7 +111,7 @@ router.post('/leave', async (req, res) => {
     } catch (err) { res.status(500).json({ error: '오류' }); }
 });
 
-// 5. 대기실 상태 조회 (핵심 수정: 타임아웃 시간 변경 및 처리 로직)
+// 5. 대기실 상태 조회 (타임아웃 시간)
 router.get('/:roomId', async (req, res) => {
     const { roomId } = req.params;
     const { userId } = req.query;
@@ -124,35 +122,29 @@ router.get('/:roomId', async (req, res) => {
 
         const now = Date.now();
 
-        // [1] 심박수 갱신
         if (userId) {
             if (userId === room.creatorId) room.lastActive.host = now;
             else if (userId === room.guestId) room.lastActive.guest = now;
         }
 
-        // [2] 타임아웃 설정 (요청하신 시간 적용)
-        const HOST_TIMEOUT = 60000;  // 1분 (방장)
-        const GUEST_TIMEOUT = 20000; // 20초 (게스트)
+        const HOST_TIMEOUT = 180000;  // 3분 (방장)
+        const GUEST_TIMEOUT = 30000;  // 30초 (게스트)
 
         // (A) 방장 잠수 체크
         if (now - new Date(room.lastActive.host).getTime() > HOST_TIMEOUT) {
             await Room.deleteOne({ roomId });
-            console.log(`방장 1분 잠수로 방 삭제: ${roomId}`);
+            console.log(`방장 3분 잠수로 방 삭제: ${roomId}`);
             return res.status(404).json({ error: '방장이 응답이 없어 방이 삭제되었습니다.', status: 'deleted' });
         }
 
         // (B) 게스트 잠수 체크
         if (room.guestId && (now - new Date(room.lastActive.guest).getTime() > GUEST_TIMEOUT)) {
-            console.log(`게스트 20초 잠수로 퇴장 처리: ${roomId}`);
+            console.log(`게스트 30초 잠수로 퇴장 처리: ${roomId}`);
             room.guestId = null;
-            room.status = 'waiting'; // 대기 모드로 복귀
+            room.status = 'waiting';
             room.gameId = null;
             await room.save();
-            
-            // 여기서 room 정보를 반환하면, 방장 화면에서는 guestId가 null인 상태를 받게 됨
-            // -> 프론트엔드에서 "게스트 나감" 처리 가능
         } else {
-            // 변경 사항이 있을 때만 저장 (부하 방지)
             if (userId) await room.save();
         }
 
@@ -161,7 +153,7 @@ router.get('/:roomId', async (req, res) => {
     } catch (err) { res.status(500).json({ error: '오류' }); }
 });
 
-// 6. 게임 연결 (기존 유지)
+// 6. 게임 연결
 router.post('/:roomId/link', async (req, res) => {
     const { gameId } = req.body;
     try {
