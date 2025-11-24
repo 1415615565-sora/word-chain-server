@@ -128,7 +128,7 @@ router.get('/:roomId', async (req, res) => {
         }
 
         const HOST_TIMEOUT = 180000;  // 3분 (방장)
-        const GUEST_TIMEOUT = 60000;  // 60초 (게스트)
+        const GUEST_TIMEOUT = 120000;  // 2분 (게스트)
 
         // (A) 방장 잠수 체크
         if (now - new Date(room.lastActive.host).getTime() > HOST_TIMEOUT) {
@@ -139,7 +139,7 @@ router.get('/:roomId', async (req, res) => {
 
         // (B) 게스트 잠수 체크
         if (room.guestId && (now - new Date(room.lastActive.guest).getTime() > GUEST_TIMEOUT)) {
-            console.log(`게스트 30초 잠수로 퇴장 처리: ${roomId}`);
+            console.log(`게스트 2분 잠수로 퇴장 처리: ${roomId}`);
             room.guestId = null;
             room.status = 'waiting';
             room.gameId = null;
