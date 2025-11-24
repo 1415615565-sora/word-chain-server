@@ -1,5 +1,6 @@
 /**
- * 카타카나 -> 히라가나 변환
+ * 카타카나 -> 히라가나 변환 (완벽 지원)
+ * 예: ラーメン -> らーめん, ヴァイオリン -> ゔぁいおりん
  */
 function toHiragana(str) {
     if (!str) return "";
@@ -9,20 +10,14 @@ function toHiragana(str) {
     });
 }
 
-// 괄호 안의 히라가나 추출 ("学校(がっこう)" -> "がっこう")
-// 실패 시 원본 반환 ("みず" -> "みず")
+// 괄호 안의 히라가나 추출
 function getCleanReading(text) {
     if (!text) return "";
-    
-    // 1. 괄호 안에 있는 내용 추출 (여러 개일 경우 마지막 괄호 기준)
     const matches = text.match(/\(([^)]+)\)/g);
     if (matches && matches.length > 0) {
-        // "ABC(def)" -> "def"
         const lastMatch = matches[matches.length - 1];
         return lastMatch.replace('(', '').replace(')', '');
     }
-    
-    // 2. 괄호가 없으면 그냥 텍스트 반환 (이미 히라가나인 경우)
     return text;
 }
 
@@ -37,15 +32,18 @@ function normalizeKana(char) {
     return smallMap[char] || char;
 }
 
+/**
+ * 끝말잇기 규칙 검증 함수
+ */
 function verifyShiritoriRule(previousWordRaw, currentReading) {
-    // 1. 이전 단어 분석
-    let previousSoundRaw = getCleanReading(previousWordRaw); // 괄호 제거
-    let previousSound = toHiragana(previousSoundRaw).trim(); // 히라가나화 및 공백 제거
+    // 1. 이전 단어 분석 (히라가나로 변환)
+    let previousSoundRaw = getCleanReading(previousWordRaw);
+    let previousSound = toHiragana(previousSoundRaw).trim(); 
     
     // 2. 끝 글자 추출
-    let lastChar = normalizeKana(previousSound.slice(-1)); // 기본 끝 글자
+    let lastChar = normalizeKana(previousSound.slice(-1));
 
-    // 장음(ー) 처리: "서-버-" -> "서-버" (앞 글자 기준)
+    // 장음(ー) 처리
     if (lastChar === 'ー') {
         const len = previousSound.length;
         if (len >= 2) {
@@ -53,17 +51,11 @@ function verifyShiritoriRule(previousWordRaw, currentReading) {
         }
     }
 
-    // 3. 현재 입력 단어 분석
+    // 3. 현재 입력 단어 분석 (히라가나로 변환)
     let currentSound = toHiragana(currentReading).trim();
     const firstChar = normalizeKana(currentSound.charAt(0));
 
-    //서버 콘솔에서 확인하세요!
-    console.log(`🔍 [규칙 검사]`);
-    console.log(`   - 이전 단어(원본): ${previousWordRaw}`);
-    console.log(`   - 이전 단어(읽기): ${previousSound}`);
-    console.log(`   - 요구하는 시작 글자: '${lastChar}'`);
-    console.log(`   - 입력한 단어(읽기): ${currentSound}`);
-    console.log(`   - 입력한 시작 글자: '${firstChar}'`);
+    console.log(`[규칙 검사] ${previousSound}(끝:${lastChar}) vs ${currentSound}(첫:${firstChar})`);
 
     return {
         isValid: lastChar === firstChar,
