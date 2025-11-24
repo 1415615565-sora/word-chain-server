@@ -116,7 +116,7 @@ router.get('/:roomId', async (req, res) => {
         }
 
         const HOST_TIMEOUT = 180000;  // 3분
-        const GUEST_TIMEOUT = 120000; // 2분
+        const GUEST_TIMEOUT = 180000; // 3분
 
         if (room.status === 'waiting') {
             if (now - new Date(room.lastActive.host).getTime() > HOST_TIMEOUT) {

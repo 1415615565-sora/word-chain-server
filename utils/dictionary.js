@@ -1,21 +1,18 @@
 const axios = require('axios');
 const https = require('https');
 
-// 🔑 입력해주신 API 키 (대괄호 없이 문자열만 입력)
-// 혹시 복사 과정에서 공백이 들어갔을까봐 .trim()과 replace로 안전장치를 걸었습니다.
-let NIKL_API_KEY = '15F65D064F161D386D3FCB9B997802E2';
+// 🔑 API 키 (공백 제거 포함)
+let NIKL_API_KEY = '15F65D064F161D386D3FCB9B997802E2'; 
 
-// SSL 에러 방지
 const httpsAgent = new https.Agent({ rejectUnauthorized: false });
 
 const KO_SEEDS = ['가', '나', '다', '라', '마', '바', '사', '아', '자', '차', '카', '타', '파', '하', '물', '산', '강', '밥', '집', '옷', '꽃', '달', '해', '별'];
 const JA_SEEDS = ['あ', 'い', 'う', 'え', 'お', 'か', 'き', 'く', 'け', 'こ', 'さ', 'し', 'す', 'せ', 'そ', 'た', 'ち', 'つ', 'て', 'と'];
 
 /**
- * 🎲 랜덤 단어 가져오기
+ * 🎲 랜덤 단어 가져오기 (즉시 호출)
  */
 async function fetchRandomWord(lang) {
-    // 키 정제 (혹시 모를 대괄호, 공백 제거)
     const cleanKey = NIKL_API_KEY.replace(/[\[\]\s]/g, '');
 
     try {
@@ -23,51 +20,45 @@ async function fetchRandomWord(lang) {
             const seed = KO_SEEDS[Math.floor(Math.random() * KO_SEEDS.length)];
             const url = 'https://stdict.korean.go.kr/api/search.do';
 
-            console.log(`📡 [한국어] 랜덤 단어 요청: "${seed}" (Key: ${cleanKey.slice(0,4)}...)`);
+            console.log(`📡 [한국어] 단어 요청 시작: "${seed}"`);
 
             const response = await axios.get(url, {
                 params: {
                     key: cleanKey,
                     q: seed,
-                    req_type: 'json', // JSON 요청
+                    req_type: 'json',
                     advanced: 'y',
                     part: 'word',
-                    pos: '1',     // 명사
-                    num: 50,      // 50개 조회
+                    pos: '1',
+                    num: 20,
+                    sort: 'popular',
                     method: 'include',
-                    type1: 'word' // 단어만 검색
+                    type1: 'word'
                 },
                 httpsAgent: httpsAgent,
-                timeout: 5000
+                timeout: 5000 // 5초 기다림
             });
 
             const data = response.data;
-
-            // 🚨 [에러 진단] 응답이 JSON 객체가 아니라 문자열(XML)로 왔다면 에러임!
-            if (typeof data === 'string') {
-                console.error(`🚨 [API 오류] 국립국어원 서버 응답이 JSON이 아닙니다.`);
-                console.error(`👉 내용 확인: ${data.substring(0, 200)}`); // 에러 내용 출력
-                return null;
-            }
+            if (typeof data === 'string') return null;
 
             const items = data?.channel?.item;
             if (items && items.length > 0) {
                 const randomItem = items[Math.floor(Math.random() * items.length)];
                 const cleanWord = randomItem.word.replace(/[^가-힣]/g, '');
-                console.log(`✅ [한국어] 랜덤 단어 성공: ${cleanWord}`);
+                console.log(`✅ [한국어] 가져옴: ${cleanWord}`);
                 return { word: cleanWord, reading: cleanWord, lang: 'ko' };
-            } else {
-                console.log(`⚠️ [한국어] "${seed}" 검색 결과가 0건입니다.`);
             }
         } 
         else if (lang === 'ja') {
-            // (일본어 로직은 정상 작동 중이므로 그대로 유지)
             const seed = JA_SEEDS[Math.floor(Math.random() * JA_SEEDS.length)];
             const url = `https://jisho.org/api/v1/search/words?keyword=${encodeURIComponent(seed)}`;
             
+            console.log(`📡 [일본어] 단어 요청 시작: "${seed}"`);
+
             const response = await axios.get(url, {
                 headers: { 'User-Agent': 'Mozilla/5.0' },
-                timeout: 3000
+                timeout: 5000
             });
 
             const candidates = response.data.data.slice(0, 20).filter(item => {
@@ -79,21 +70,20 @@ async function fetchRandomWord(lang) {
             if (candidates.length > 0) {
                 const randomItem = candidates[Math.floor(Math.random() * candidates.length)];
                 const jaData = randomItem.japanese[0];
-                return { 
-                    word: jaData.word || jaData.reading, 
-                    reading: jaData.reading || jaData.word,
-                    lang: 'ja' 
-                };
+                const word = jaData.word || jaData.reading;
+                const reading = jaData.reading || jaData.word;
+                console.log(`✅ [일본어] 가져옴: ${word}`);
+                return { word, reading, lang: 'ja' };
             }
         }
     } catch (error) {
-        console.error(`🚨 [랜덤 단어 실패] ${lang} 오류:`, error.message);
+        console.error(`🚨 API 호출 실패 (${lang}):`, error.message);
     }
-    return null;
+    return null; // 실패 시 null (기본 단어 사용)
 }
 
 /**
- * (기존) 통합 검사 함수
+ * (기존) 통합 검사 함수 (변경 없음)
  */
 async function checkWordExists(word, lang) {
     if (!word || word.trim().length === 0) return { isValid: false };
@@ -102,7 +92,6 @@ async function checkWordExists(word, lang) {
     return { isValid: true, reading: word };
 }
 
-// 일본어 단어 검사 (기존 유지)
 async function checkJapaneseWord(word) {
     if (/[가-힣]/.test(word)) return { isValid: false };
     const url = `https://jisho.org/api/v1/search/words?keyword=${encodeURIComponent(word)}`;
@@ -120,25 +109,17 @@ async function checkJapaneseWord(word) {
     } catch (error) { return { isValid: true, reading: word }; }
 }
 
-// 한국어 단어 검사 (키 정제 적용)
 async function checkKoreanWord(word) {
     if (/[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff]/.test(word)) return { isValid: false };
-    
-    // 키 정제
     const cleanKey = NIKL_API_KEY.replace(/[\[\]\s]/g, '');
     const url = 'https://stdict.korean.go.kr/api/search.do';
-    
     try {
         const response = await axios.get(url, {
             params: { key: cleanKey, q: word, req_type: 'json', advanced: 'y', part: 'word', method: 'exact' },
             httpsAgent: httpsAgent, timeout: 5000
         });
         const data = response.data;
-        
-        // 에러 응답 체크
-        if (typeof data === 'string') return { isValid: false };
-
-        if (!data || !data.channel || data.channel.total <= 0) return { isValid: false };
+        if (typeof data === 'string' || !data || !data.channel || data.channel.total <= 0) return { isValid: false };
         const validItem = data.channel.item.find(item => {
             return item.word.replace(/[^가-힣]/g, '') === word && (item.pos === '명사' || item.pos === '대명사' || item.pos === '수사');
         });
