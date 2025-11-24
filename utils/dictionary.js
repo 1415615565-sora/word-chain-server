@@ -6,28 +6,24 @@ const NIKL_API_KEY = '15F65D064F161D386D3FCB9B997802E2';
 
 const httpsAgent = new https.Agent({ rejectUnauthorized: false });
 
-// 랜덤 단어용 시드
 const KO_SEEDS = ['가', '나', '다', '라', '마', '바', '사', '아', '자', '차', '카', '타', '파', '하', '물', '산', '강', '집', '꿈', '별'];
 const JA_SEEDS = ['あ', 'い', 'う', 'え', 'お', 'か', 'き', 'く', 'け', 'こ', 'さ', 'し', 'す', 'せ', 'そ', 'た', 'ち', 'つ', 'て', 'と'];
 
 /**
- * 🧹 문자열 청소 함수 (특수문자, 번호, 괄호 제거)
+ * 🧹 문자열 청소 함수
  */
 function cleanString(str, lang) {
     if (!str) return "";
     
     let cleaned = str;
-    // 1. 괄호, 삿갓(^), 물결(~) 뒤 제거가 아니라 '문자'만 남기기 전략
-    // (우리말샘은 '자전거-1' 처럼 하이픈을 씁니다)
     cleaned = cleaned.split('(')[0]; 
+    cleaned = cleaned.split('-')[0]; // -1 같은 번호 제거
     
-    if (lang === 'ko') {
-        // 한글만 남기고 나머지(특수문자, 숫자, 하이픈 등) 다 제거
-        cleaned = cleaned.replace(/[^가-힣]/g, '');
-    } else if (lang === 'ja') {
-        // 일본어 문자만 남김
-        cleaned = cleaned.replace(/[^\u4e00-\u9faf\u3040-\u309f\u30a0-\u30ff\u30fc]/g, '');
-    }
+    cleaned = cleaned.replace(/\^/g, ''); // 구급^차 -> 구급차 (제거)
+    cleaned = cleaned.replace(/~/g, ''); 
+
+    if (lang === 'ko') cleaned = cleaned.replace(/[^가-힣]/g, '');
+    else if (lang === 'ja') cleaned = cleaned.replace(/[^\u4e00-\u9faf\u3040-\u309f\u30a0-\u30ff\u30fc]/g, '');
     
     return cleaned.trim();
 }
@@ -45,6 +41,7 @@ function toHiragana(str) {
 
 /**
  * 🎲 랜덤 단어 가져오기
+ * (랜덤은 다양성을 위해 include 유지해도 됨, 여기는 건드리지 않음)
  */
 async function fetchRandomWord(lang) {
     const cleanKey = NIKL_API_KEY.replace(/[\[\]\s]/g, '');
@@ -58,19 +55,11 @@ async function fetchRandomWord(lang) {
 
             const response = await axios.get(url, {
                 params: {
-                    key: cleanKey,
-                    q: seed,
-                    req_type: 'json',
-                    advanced: 'y',
-                    part: 'word',
-                    pos: '1', // 명사
-                    num: 30,
-                    sort: 'popular',
-                    method: 'include', // 포함 검색
-                    type1: 'word'
+                    key: cleanKey, q: seed, req_type: 'json',
+                    advanced: 'y', part: 'word', pos: '1', num: 20, 
+                    sort: 'popular', method: 'include', type1: 'word'
                 },
-                httpsAgent: httpsAgent,
-                timeout: 5000
+                httpsAgent: httpsAgent, timeout: 5000
             });
 
             const data = response.data;
@@ -113,7 +102,7 @@ async function checkWordExists(word, lang) {
     return { isValid: true, reading: word };
 }
 
-// 🇰🇷 한국어 단어 검사 (광역 검색 + 정밀 필터링)
+// 🇰🇷 한국어 단어 검사 (여기가 핵심입니다! ⭐)
 async function checkKoreanWord(word) {
     if (/[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff]/.test(word)) return { isValid: false };
     
@@ -128,10 +117,13 @@ async function checkKoreanWord(word) {
                 req_type: 'json',
                 advanced: 'y',
                 part: 'word',
-                // 🚀 [핵심] 'include'로 넓게 잡고, 개수를 50개로 늘려서 다 가져옴
-                method: 'include', 
+                
+                // 🚀 [원상복구] 'include' -> 'exact' (정확 일치)로 변경!
+                // 이제 "교수"를 검색하면 "교수법" 같은 게 안 나오고 딱 "교수"만 나옵니다.
+                method: 'exact', 
+                
                 pos: '1', // 명사
-                num: 50 
+                num: 10 
             },
             httpsAgent: httpsAgent,
             timeout: 5000
@@ -145,34 +137,27 @@ async function checkKoreanWord(word) {
         }
 
         if (!data || !data.channel || data.channel.total <= 0) {
-            console.log(`❌ [한국어] '${word}' 검색 결과 0건`);
+            console.log(`❌ [한국어] '${word}' 사전에 없음`);
             return { isValid: false };
         }
         
         const items = data.channel.item;
 
-        // 🔍 [디버깅 로그] API가 뭘 가져왔는지 눈으로 확인 (최대 5개만 출력)
-        const candidates = items.slice(0, 5).map(i => `${i.word}(${i.pos})`).join(', ');
-        console.log(`🔎 '${word}' 검색 결과 후보: ${candidates}... (총 ${items.length}개)`);
-
-        // 🎯 [정밀 필터링] 진짜 똑같은 명사 찾기
+        // 🎯 정밀 필터링
         const validItem = items.find(item => {
-            const apiWord = cleanString(item.word, 'ko'); // "자전거-1" -> "자전거"
+            const apiWord = cleanString(item.word, 'ko'); // "교수^" -> "교수"
             
-            // 1. 글자가 정확히 일치하는가?
             const isMatch = apiWord === word;
-            
-            // 2. 품사가 명사인가? (명사, 대명사, 수사, 의존 명사 등)
             const isNoun = item.pos.includes('명사') || item.pos.includes('대명사') || item.pos.includes('수사');
             
             return isMatch && isNoun;
         });
 
         if (validItem) {
-            console.log(`✅ [한국어] '${word}' 인증 성공!`);
+            console.log(`✅ [한국어] '${word}' 인증 성공! (품사: ${validItem.pos})`);
             return { isValid: true, reading: word };
         } else {
-            console.log(`❌ [한국어] '${word}'와 정확히 일치하는 명사를 찾지 못함`);
+            console.log(`❌ [한국어] '${word}'는 명사가 아니거나 정확하지 않음`);
             return { isValid: false };
         }
 
