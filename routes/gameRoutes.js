@@ -6,7 +6,6 @@ const Room = require('../models/Room');
 const { translateWord } = require('../utils/translator');
 const { checkWordExists } = require('../utils/dictionary');
 const { verifyShiritoriRule } = require('../utils/gameRules');
-
 // 시작 단어 리스트
 const STARTING_WORDS = [
     { ko: '나무', ja: '木(き)' }, 
@@ -76,14 +75,12 @@ router.post('/:gameId/submit', async (req, res) => {
         const dictResult = await checkWordExists(word, playerType);
         if (!dictResult.isValid) return await applyPenalty(game, playerType, 5, '사전에 없는 단어입니다.', res);
 
-        // [3] 끝말잇기 규칙 검사
+        // [3] 규칙 검사
         const previousWordRaw = playerType === 'korean' ? game.currentWord.ko : game.currentWord.ja;
         const ruleCheck = verifyShiritoriRule(previousWordRaw, dictResult.reading);
         if (!ruleCheck.isValid) return await applyPenalty(game, playerType, 5, `땡! '${ruleCheck.requiredSound}'(으)로 시작하세요`, res);
 
-        // 🚀 [수정됨] 일본어 플레이어가 입력한 단어가 'ん' 또는 'ン'으로 끝나는지 확인
-        const reading = dictResult.reading.trim();
-        if (playerType === 'japanese' && (reading.endsWith('ん') || reading.endsWith('ン'))) {
+        if (playerType === 'japanese' && (dictResult.reading.trim().endsWith('ん') || dictResult.reading.trim().endsWith('ン'))) {
              return await endGame(game, 'korean', `'ん(ン)'으로 끝남`, res);
         }
 
@@ -98,8 +95,6 @@ router.post('/:gameId/submit', async (req, res) => {
             return await applyPenalty(game, playerType, 5, `번역된 결과(${translatedText})가 사전에 없어 사용할 수 없습니다.`, res);
         }
 
-        // 🚀 [수정됨] 번역된 일본어 단어가 'ん' 또는 'ン'으로 끝나는지 확인
-        // 예: '라면' -> 'ラーメン'(라-멘) -> 패배
         if (targetLang === 'ja') {
             const transReading = transCheck.reading.trim();
             if (transReading.endsWith('ん') || transReading.endsWith('ン')) {
@@ -134,8 +129,7 @@ router.post('/:gameId/submit', async (req, res) => {
     }
 });
 
-// ... (status, endGame 등 나머지 코드는 기존과 동일)
-// 3. 상태 조회
+// 3. 상태 조회 (턴인 사람만 타임아웃 체크)
 router.get('/:gameId/status', async (req, res) => {
     const { gameId } = req.params;
     const { playerType } = req.query;
@@ -148,23 +142,49 @@ router.get('/:gameId/status', async (req, res) => {
         const now = Date.now();
 
         if (game.status === 'playing') {
+            // [1] 심박수 갱신 (누구든지 요청을 보내면 생존 신고)
             if (playerType) {
                 game.lastActive[playerType] = now;
+                // DB 업데이트 (다른 필드 영향 없이 lastActive만 갱신)
                 await Game.updateOne({ gameId }, { [`lastActive.${playerType}`]: now });
-            
-                const opponent = playerType === 'korean' ? 'japanese' : 'korean';
-                const lastSeen = new Date(game.lastActive[opponent]).getTime();
-                
-                if (now - lastSeen > 15000) {
-                    game.status = 'finished';
-                    game.winner = playerType;
-                    game.winnerReason = '상대방 연결 끊김';
-                    await game.save();
-                    await Room.deleteOne({ roomId: game.roomId });
-                    return res.json(game);
-                }
             }
 
+            // [2] "현재 턴인 플레이어" 잠수 체크
+            const currentTurnPlayer = game.currentTurn; 
+            const lastActiveTime = new Date(game.lastActive[currentTurnPlayer]).getTime();
+
+            // 30초 경과 시
+            if (now - lastActiveTime > 30000) {
+                const winner = currentTurnPlayer === 'korean' ? 'japanese' : 'korean';
+    
+                game.status = 'finished';
+                game.winner = winner;
+                game.winnerReason = '상대방의 응답이 없습니다 (연결 끊김)'; //승리 사유
+                await game.save();
+
+                // 방도 같이 삭제 (청소)
+                await Room.deleteOne({ roomId: game.roomId });
+
+                return res.json(game); //남은 사람에게 "너가 이겼어"라고 알려줌
+            }
+            
+            // 현재 턴인 사람이 30초(30000ms) 동안 활동이 없으면 아웃
+            if (now - lastActiveTime > 30000) {
+                const winner = currentTurnPlayer === 'korean' ? 'japanese' : 'korean';
+                
+                game.status = 'finished';
+                game.winner = winner;
+                game.winnerReason = '상대방의 응답이 없습니다 (30초 경과)'; // 사유 변경
+                await game.save();
+
+                // 방 삭제
+                await Room.deleteOne({ roomId: game.roomId });
+                console.log(`턴 플레이어 잠수(30초)로 방 삭제: ${game.roomId}`);
+
+                return res.json(game);
+            }
+
+            // [3] 게임 타이머 및 카운트다운 로직
             if (now < game.startTime) {
                 responseData.countdown = Math.ceil((game.startTime - now) / 1000);
                 responseData.isStarting = true; 
